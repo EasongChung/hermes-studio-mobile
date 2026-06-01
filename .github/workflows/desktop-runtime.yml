@@ -44,6 +44,7 @@ jobs:
             runner: ubuntu-22.04-arm
             target_os: linux
             target_arch: arm64
+            skip_browser_runtime: true
 
     steps:
       - name: Checkout repository
@@ -101,6 +102,8 @@ jobs:
         env:
           TARGET_OS: ${{ matrix.target_os }}
           TARGET_ARCH: ${{ matrix.target_arch }}
+          GH_TOKEN: ${{ github.token }}
+          HERMES_SKIP_BROWSER_RUNTIME: ${{ matrix.skip_browser_runtime || 'false' }}
         run: npm --prefix packages/desktop run prepare:runtime
 
       - name: Package runtime

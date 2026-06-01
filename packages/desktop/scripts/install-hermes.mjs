@@ -111,15 +111,25 @@ function optionalRunInvocation(invocation, args, options = {}) {
   return optionalRun(invocation.command, [...invocation.argsPrefix, ...args], options)
 }
 
+function pythonBuildEnv() {
+  if (TARGET_OS !== 'darwin') return process.env
+
+  const env = { ...process.env }
+  if (!env.AR && existsSync('/usr/bin/ar')) env.AR = '/usr/bin/ar'
+  if (!env.RANLIB && existsSync('/usr/bin/ranlib')) env.RANLIB = '/usr/bin/ranlib'
+  return env
+}
+
 function installPythonPackages(packages, label) {
   if (packages.length === 0) return
+  const env = pythonBuildEnv()
   if (hasUv()) {
     console.log(`→ Installing ${label} via uv: ${packages.join(' ')}`)
     run('uv', [
-    'pip', 'install',
-    '--python', pyBin,
+      'pip', 'install',
+      '--python', pyBin,
       ...packages,
-    ])
+    ], { env })
   } else {
     console.log(`→ Installing ${label} via pip: ${packages.join(' ')}`)
     run(pyBin, [
@@ -127,7 +137,7 @@ function installPythonPackages(packages, label) {
       ...packages,
       '--no-warn-script-location',
       '--disable-pip-version-check',
-    ])
+    ], { env })
   }
 }
 
@@ -461,4 +471,8 @@ if (!SKIP_BROWSER_RUNTIME) {
   ], { env: browserRuntimeEnv() })
 }
 
-console.log('✓ hermes Python, MCP, websockets, agent-browser, and Chromium checks passed')
+if (SKIP_BROWSER_RUNTIME) {
+  console.log('✓ hermes Python, MCP, and websockets checks passed; browser runtime skipped')
+} else {
+  console.log('✓ hermes Python, MCP, websockets, agent-browser, and Chromium checks passed')
+}
