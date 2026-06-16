@@ -388,7 +388,10 @@ describe('session conversations controller', () => {
   })
 
   it('searches all account-accessible single-chat sessions unless profile is explicit', async () => {
-    localSearchSessionsMock.mockReturnValue([])
+    localSearchSessionsMock.mockReturnValue([
+      { id: 'global-1', profile: 'default', source: 'global_agent' },
+      { id: 'chat-1', profile: 'default', source: 'cli' },
+    ])
 
     const mod = await import('../../packages/server/src/controllers/hermes/sessions')
     const ctx: any = {
@@ -399,6 +402,10 @@ describe('session conversations controller', () => {
     await mod.search(ctx)
 
     expect(localSearchSessionsMock).toHaveBeenCalledWith(undefined, 'docker', 10)
+    expect(ctx.body.results).toEqual([
+      expect.objectContaining({ id: 'global-1', source: 'global_agent' }),
+      expect.objectContaining({ id: 'chat-1', source: 'cli' }),
+    ])
   })
 
   it('searches only global-agent sessions when requested by source', async () => {
