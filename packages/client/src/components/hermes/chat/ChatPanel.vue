@@ -368,6 +368,21 @@ function getSelectableModelGroupsForProfile(profile: string) {
 
 function getDefaultModelForProfile(profile: string) {
   const groups = getSelectableModelGroupsForProfile(profile);
+  const activeProfileName = profilesStore.activeProfileName || "default";
+  const selectedProvider = appStore.selectedProvider || "";
+  const selectedModel = appStore.selectedModel || "";
+  const selectedGroup = selectedProvider
+    ? groups.find((group) => group.provider === selectedProvider)
+    : undefined;
+  if (
+    profile === activeProfileName &&
+    selectedGroup?.models.includes(selectedModel)
+  ) {
+    return {
+      provider: selectedProvider,
+      model: selectedModel,
+    };
+  }
   const profileModels = appStore.profileModelGroups.find(
     (entry) => entry.profile === profile,
   );

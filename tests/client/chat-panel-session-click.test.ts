@@ -21,4 +21,13 @@ describe('ChatPanel session clicks', () => {
     expect(source).not.toContain('header-model-button--readonly')
     expect(source).not.toContain('if (isActiveSessionCodingAgent.value) return')
   })
+
+  it('uses the active sidebar model as the new chat default for the active profile', () => {
+    const source = readFileSync('packages/client/src/components/hermes/chat/ChatPanel.vue', 'utf8')
+
+    expect(source).toContain('const selectedProvider = appStore.selectedProvider || ""')
+    expect(source).toContain('const selectedModel = appStore.selectedModel || ""')
+    expect(source).toContain('profile === activeProfileName')
+    expect(source).toContain('selectedGroup?.models.includes(selectedModel)')
+  })
 })
