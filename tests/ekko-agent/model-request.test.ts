@@ -6,6 +6,7 @@ import {
   toAnthropicMessagesPayload,
   toGeminiContentsPayload,
   normalizeOpenAIChatResponse,
+  resolveModelProviderConfigs,
   toOpenAIResponsesPayload,
   toOpenAIChatPayload,
   toPromptCompletionPayload,
@@ -21,6 +22,43 @@ const providerConfig: ModelProviderConfig = {
 }
 
 describe('ekko-agent model requests', () => {
+  it('resolves provider configs from explicit api mode with inferred fallback', () => {
+    const resolved = resolveModelProviderConfigs({
+      provider: 'glm',
+      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      apiKey: 'secret',
+      model: 'glm-5.2',
+      apiMode: 'codex_responses',
+    })
+
+    expect(resolved.providerConfig).toMatchObject({
+      id: 'glm',
+      type: 'openai-compatible',
+      requestStyle: 'openai-responses',
+      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      apiKey: 'secret',
+      defaultModel: 'glm-5.2',
+    })
+    expect(resolved.fallbackProviderConfig).toMatchObject({
+      requestStyle: 'openai-chat',
+      defaultModel: 'glm-5.2',
+    })
+  })
+
+  it('infers anthropic provider configs from anthropic URLs', () => {
+    const resolved = resolveModelProviderConfigs({
+      provider: 'custom',
+      baseUrl: 'https://api.z.ai/api/anthropic',
+      model: 'glm-5.2',
+    })
+
+    expect(resolved.providerConfig).toMatchObject({
+      type: 'anthropic',
+      requestStyle: 'anthropic-messages',
+    })
+    expect(resolved.fallbackProviderConfig).toBeUndefined()
+  })
+
   it('converts internal requests to OpenAI-compatible chat payloads', () => {
     const payload = toOpenAIChatPayload(providerConfig, {
       messages: [

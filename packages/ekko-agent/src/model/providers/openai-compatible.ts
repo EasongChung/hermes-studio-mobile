@@ -52,6 +52,14 @@ interface OpenAIToolDefinition {
 
 type OpenAIMessageContent = string | Array<{ type?: string; text?: string }> | null | undefined
 
+interface OpenAIChatResponseMessage {
+  content?: OpenAIMessageContent
+  reasoning?: string
+  reasoning_content?: string
+  reasoning_details?: unknown
+  tool_calls?: OpenAIToolCall[]
+}
+
 interface OpenAIChatPayload {
   model: string
   messages: OpenAIChatMessage[]
@@ -70,12 +78,11 @@ interface OpenAIChatResponse {
   id?: string
   model?: string
   choices?: Array<{
-    message?: {
-      content?: OpenAIMessageContent
-      tool_calls?: OpenAIToolCall[]
-    }
+    message?: OpenAIChatResponseMessage
     delta?: {
       content?: string | null
+      reasoning?: string | null
+      reasoning_content?: string | null
       tool_calls?: Array<{
         index?: number
         id?: string
@@ -128,13 +135,13 @@ export class OpenAICompatibleModelClient implements ModelClient {
 
   async create(request: ModelRequest): Promise<ModelResponse> {
     const payload = toOpenAIChatPayload(this.config, { ...request, stream: false })
-    const response = await this.postJson(payload)
+    const response = await this.postJson(payload, request.signal)
     return normalizeOpenAIChatResponse(this.provider, response)
   }
 
   async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
     const payload = toOpenAIChatPayload(this.config, { ...request, stream: true })
-    const response = await this.post(payload)
+    const response = await this.post(payload, request.signal)
 
     if (!response.body) {
       throw new ModelProviderError('Model provider returned an empty stream body.', {
@@ -185,6 +192,10 @@ export class OpenAICompatibleModelClient implements ModelClient {
           if (content) {
             yield { type: 'text-delta', text: content }
           }
+          const reasoning = choice.delta?.reasoning_content ?? choice.delta?.reasoning
+          if (reasoning) {
+            yield { type: 'reasoning-delta', text: reasoning }
+          }
 
           for (const toolCallDelta of choice.delta?.tool_calls ?? []) {
             const index = toolCallDelta.index ?? 0
@@ -210,17 +221,17 @@ export class OpenAICompatibleModelClient implements ModelClient {
     yield { type: 'done', response: { id: responseId, model: responseModel, finishReason } }
   }
 
-  private async postJson(payload: OpenAIChatPayload): Promise<OpenAIChatResponse> {
-    const response = await this.post(payload)
+  private async postJson(payload: OpenAIChatPayload, signal?: AbortSignal): Promise<OpenAIChatResponse> {
+    const response = await this.post(payload, signal)
     return parseResponseJson(this.provider, response)
   }
 
-  private async post(payload: OpenAIChatPayload): Promise<Response> {
+  private async post(payload: OpenAIChatPayload, signal?: AbortSignal): Promise<Response> {
     const response = await this.fetchImpl(chatCompletionsUrl(this.config), {
       method: 'POST',
       headers: requestHeaders(this.config),
       body: JSON.stringify(payload),
-      signal: abortSignal(this.config.timeoutMs),
+      signal: abortSignal(this.config.timeoutMs, signal),
     })
 
     if (!response.ok) {
@@ -258,11 +269,20 @@ export function normalizeOpenAIChatResponse(provider: string, response: OpenAICh
     id: response.id,
     model: response.model,
     content: normalizeContent(choice?.message?.content),
+    reasoning: normalizeReasoning(choice?.message),
     toolCalls: choice?.message?.tool_calls?.map(toAgentToolCall),
     usage: response.usage ? normalizeUsage(response.usage) : undefined,
     finishReason: choice?.finish_reason ?? undefined,
     raw: response,
   }
+}
+
+function normalizeReasoning(message: OpenAIChatResponseMessage | undefined): string | undefined {
+  if (!message) return undefined
+  if (typeof message.reasoning_content === 'string' && message.reasoning_content) return message.reasoning_content
+  if (typeof message.reasoning === 'string' && message.reasoning) return message.reasoning
+  if (message.reasoning_details !== undefined && message.reasoning_details !== null) return JSON.stringify(message.reasoning_details)
+  return undefined
 }
 
 function toOpenAIChatMessage(message: AgentMessage): OpenAIChatMessage {

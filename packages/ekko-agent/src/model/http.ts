@@ -13,9 +13,14 @@ export function requestHeaders(config: ModelProviderConfig, defaults: Record<str
   return headers
 }
 
-export function abortSignal(timeoutMs?: number): AbortSignal | undefined {
-  if (!timeoutMs) return undefined
-  return AbortSignal.timeout(timeoutMs)
+export function abortSignal(timeoutMs?: number, signal?: AbortSignal): AbortSignal | undefined {
+  const signals = [
+    signal,
+    timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
+  ].filter(Boolean) as AbortSignal[]
+  if (signals.length === 0) return undefined
+  if (signals.length === 1) return signals[0]
+  return AbortSignal.any(signals)
 }
 
 export function providerUrl(config: ModelProviderConfig, fallbackBaseUrl: string, path: string): string {
@@ -63,12 +68,13 @@ export async function postJson<TResponse>(
   url: string,
   payload: unknown,
   headers: HeadersInit = requestHeaders(config),
+  signal?: AbortSignal,
 ): Promise<TResponse> {
   const response = await fetchImpl(url, {
     method: 'POST',
     headers,
     body: JSON.stringify(payload),
-    signal: abortSignal(config.timeoutMs),
+    signal: abortSignal(config.timeoutMs, signal),
   })
 
   if (!response.ok) {
@@ -84,12 +90,13 @@ export async function postStream(
   url: string,
   payload: unknown,
   headers: HeadersInit = requestHeaders(config),
+  signal?: AbortSignal,
 ): Promise<Response> {
   const response = await fetchImpl(url, {
     method: 'POST',
     headers,
     body: JSON.stringify(payload),
-    signal: abortSignal(config.timeoutMs),
+    signal: abortSignal(config.timeoutMs, signal),
   })
 
   if (!response.ok) {

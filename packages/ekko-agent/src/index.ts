@@ -14,6 +14,7 @@ export function createEkkoAgentInfo(): EkkoAgentInfo {
 
 export * from './model/errors'
 export * from './model/messages'
+export * from './model/provider-config'
 export * from './model/registry'
 export * from './model/types'
 export * from './runtime/events'

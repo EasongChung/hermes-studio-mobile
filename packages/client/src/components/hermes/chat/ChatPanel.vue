@@ -330,11 +330,16 @@ const newChatWorkspace = ref("");
 const newChatLoading = ref(false);
 const CODING_AGENT_AUTH_PROVIDER_KEYS = new Set(["openai-codex", "copilot", "xai-oauth", "nous", "google-gemini-cli", "claude-oauth"]);
 
-const newChatAgentOptions = computed(() => [
-  { label: "Hermes", value: "hermes" },
-  { label: "Claude Code", value: "claude-code" },
-  { label: "Codex", value: "codex" },
-]);
+const showEkkoAgentEntry = import.meta.env.DEV;
+const newChatAgentOptions = computed(() => {
+  const options = [
+    { label: "Hermes", value: "hermes" },
+    { label: "Claude Code", value: "claude-code" },
+    { label: "Codex", value: "codex" },
+  ];
+  if (showEkkoAgentEntry) options.push({ label: "Ekko Agent", value: "ekko-agent" });
+  return options;
+});
 
 const newChatApiModeOptions = computed(() => [
   { label: t("codingAgents.protocolOpenAiChat"), value: "chat_completions" },
@@ -454,7 +459,7 @@ const canConfirmNewChat = computed(() => {
   if (!newChatUsesProviderModel.value) return true;
   if (!newChatProvider.value || !newChatModel.value) return false;
   if (!isNewChatCodingAgent.value) return true;
-  if (!newChatApiMode.value) return false;
+  if (isNewChatExternalCodingAgent.value && !newChatApiMode.value) return false;
   if (newChatNeedsBaseUrl.value && !newChatBaseUrl.value.trim()) return false;
   if (newChatNeedsApiKey.value && !newChatApiKey.value.trim()) return false;
   return true;
@@ -577,7 +582,7 @@ async function confirmNewChat() {
     workspace: newChatWorkspace.value || null,
     baseUrl: source === "coding_agent" && !isGlobalCodingAgent ? group?.base_url || newChatBaseUrl.value.trim() || undefined : undefined,
     apiKey: source === "coding_agent" && !isGlobalCodingAgent ? group?.api_key || newChatApiKey.value.trim() || undefined : undefined,
-    apiMode: source === "coding_agent" && !isGlobalCodingAgent ? newChatApiMode.value : undefined,
+    apiMode: isNewChatExternalCodingAgent.value && !isGlobalCodingAgent ? newChatApiMode.value : undefined,
   });
   await router.push({
     name: chatStore.runtimeMode === "global_agent" ? "hermes.globalAgentSession" : "hermes.session",
@@ -942,6 +947,10 @@ const isSessionModelScopedCodingAgent = computed(() =>
   sessionModelSession.value?.source === "coding_agent" &&
   sessionModelSession.value?.codingAgentMode !== "global",
 );
+const isSessionModelExternalCodingAgent = computed(() =>
+  isSessionModelScopedCodingAgent.value &&
+  (sessionModelSession.value?.agent === "claude-code" || sessionModelSession.value?.agent === "codex"),
+);
 
 const sessionModelBaseGroups = computed(() =>
   sessionModelProfile.value
@@ -1067,7 +1076,7 @@ async function applySessionModelSwitch(model: string, provider: string, apiMode?
 async function selectSessionModel(model: string, provider: string) {
   const meta = sessionModelBaseGroups.value.find((group) => group.provider === provider)?.model_meta?.[model];
   if (meta?.disabled || !sessionModelSessionId.value) return;
-  if (isSessionModelScopedCodingAgent.value) {
+  if (isSessionModelExternalCodingAgent.value) {
     pendingSessionModelSwitch.value = { model, provider };
     sessionModelApiMode.value = defaultSessionModelApiMode(provider);
     showSessionModelModeModal.value = true;
@@ -1526,7 +1535,7 @@ async function handleSessionModelCustomSubmit() {
               filterable
             />
           </label>
-          <label v-if="isNewChatCodingAgent && effectiveNewChatAgentMode === 'scoped'" class="new-chat-field">
+          <label v-if="isNewChatExternalCodingAgent && effectiveNewChatAgentMode === 'scoped'" class="new-chat-field">
             <span class="new-chat-label">{{ t("codingAgents.protocolScope") }}</span>
             <NSelect
               v-model:value="newChatApiMode"

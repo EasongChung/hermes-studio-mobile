@@ -266,6 +266,14 @@ function runtimeToolPayloadOrUndefined(value: unknown): unknown | undefined {
   return hasRuntimeToolPayload(value) ? value : undefined
 }
 
+function runtimeToolOutputFromEvent(event: unknown): unknown | undefined {
+  if (!event || typeof event !== 'object') return undefined
+  const record = event as Record<string, unknown>
+  return runtimeToolPayloadOrUndefined(
+    record.output ?? record.result ?? record.content ?? record.preview,
+  )
+}
+
 function runtimePayloadText(value: unknown): string {
   if (!hasRuntimeToolPayload(value)) return ''
   if (typeof value === 'string') return value
@@ -476,7 +484,7 @@ function mapHermesMessages(msgs: HermesMessage[]): Message[] {
         toolArgs,
         toolPreview: typeof preview === 'string' ? preview.slice(0, 100) || undefined : undefined,
         toolResult: moaPayload ? runtimeToolPayloadOrUndefined(moaPayload.result) : runtimeToolPayloadOrUndefined((msg as any).content),
-        toolStatus: 'done',
+        toolStatus: readFinishReason(msg) === 'error' ? 'error' : 'done',
         finishReason: readFinishReason(msg),
         runMarker: readRunMarker(msg),
       })
@@ -1345,16 +1353,16 @@ export const useChatStore = defineStore('chat', () => {
                     toolStatus: 'running',
                   })
                 }
-              } else if (e.event === 'tool.completed') {
+              } else if (e.event === 'tool.completed' || e.event === 'tool.failed') {
                 const msgs = getSessionMsgs(sessionId)
                 const toolCallId = e.tool_call_id as string | undefined
                 const toolMsgs = toolCallId
                   ? msgs.filter(m => m.role === 'tool' && m.toolCallId === toolCallId)
                   : msgs.filter(m => m.role === 'tool' && m.toolStatus === 'running')
                 if (toolMsgs.length > 0) {
-                  const output = runtimeToolPayloadOrUndefined((e as any).output)
+                  const output = runtimeToolOutputFromEvent(e)
                   updateMessage(sessionId, toolMsgs[toolMsgs.length - 1].id, {
-                    toolStatus: e.error === true || runtimeToolOutputHasError(output) ? 'error' : 'done',
+                    toolStatus: e.event === 'tool.failed' || e.error === true || runtimeToolOutputHasError(output) ? 'error' : 'done',
                     toolDuration: e.duration,
                     toolResult: output,
                   })
@@ -2352,7 +2360,7 @@ export const useChatStore = defineStore('chat', () => {
         agentToCodingAgentId(activeSession.value?.agent) ||
         'claude-code'
       const codingAgentMode = activeSession.value?.codingAgentMode || 'scoped'
-      const codingAgentApiMode = isCodingAgentExecution && codingAgentMode !== 'global'
+      const codingAgentApiMode = isCodingAgentExecution && codingAgentId !== 'ekko-agent' && codingAgentMode !== 'global'
         ? normalizeCodingAgentApiMode(
             activeSession.value?.apiMode || providerGroup?.api_mode,
             inferCodingAgentApiMode(
@@ -2821,7 +2829,8 @@ export const useChatStore = defineStore('chat', () => {
               break
             }
 
-            case 'tool.completed': {
+            case 'tool.completed':
+            case 'tool.failed': {
               runHadToolActivity = true
               const msgs = getSessionMsgs(sid)
               const toolCallId = (evt as any).tool_call_id as string | undefined
@@ -2830,8 +2839,8 @@ export const useChatStore = defineStore('chat', () => {
                 : msgs.filter(m => m.role === 'tool' && m.toolStatus === 'running')
               if (toolMsgs.length > 0) {
                 const last = toolMsgs[toolMsgs.length - 1]
-                const output = runtimeToolPayloadOrUndefined((evt as any).output)
-                const hasError = (evt as any).error === true || runtimeToolOutputHasError(output)
+                const output = runtimeToolOutputFromEvent(evt)
+                const hasError = evt.event === 'tool.failed' || (evt as any).error === true || runtimeToolOutputHasError(output)
                 const duration = (evt as any).duration
                 updateMessage(sid, last.id, {
                   toolStatus: hasError ? 'error' : 'done',
@@ -3415,7 +3424,8 @@ export const useChatStore = defineStore('chat', () => {
           break
         }
 
-        case 'tool.completed': {
+        case 'tool.completed':
+        case 'tool.failed': {
           runHadToolActivity = true
           const msgs = getSessionMsgs(sid)
           const toolCallId = (evt as any).tool_call_id as string | undefined
@@ -3423,8 +3433,8 @@ export const useChatStore = defineStore('chat', () => {
             ? msgs.filter(m => m.role === 'tool' && m.toolCallId === toolCallId)
             : msgs.filter(m => m.role === 'tool' && m.toolStatus === 'running')
           if (toolMsgs.length > 0) {
-            const output = runtimeToolPayloadOrUndefined((evt as any).output)
-            const hasError = (evt as any).error === true || runtimeToolOutputHasError(output)
+            const output = runtimeToolOutputFromEvent(evt)
+            const hasError = evt.event === 'tool.failed' || (evt as any).error === true || runtimeToolOutputHasError(output)
             updateMessage(sid, toolMsgs[toolMsgs.length - 1].id, {
               toolStatus: hasError ? 'error' : 'done',
               toolDuration: (evt as any).duration,

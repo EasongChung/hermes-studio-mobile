@@ -83,6 +83,8 @@ export class GeminiContentsModelClient implements ModelClient {
       this.fetchImpl,
       geminiUrl(this.config, request.model, false),
       toGeminiContentsPayload(this.config, request),
+      undefined,
+      request.signal,
     )
     return normalizeGeminiResponse(response, request.model ?? this.config.defaultModel)
   }
@@ -93,6 +95,8 @@ export class GeminiContentsModelClient implements ModelClient {
       this.fetchImpl,
       geminiUrl(this.config, request.model, true),
       toGeminiContentsPayload(this.config, request),
+      undefined,
+      request.signal,
     )
 
     for await (const event of readServerSentEvents(response)) {

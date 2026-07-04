@@ -327,6 +327,27 @@ function autoSizeTextarea(el: HTMLTextAreaElement | undefined = textareaRef.valu
   el.style.height = `${Math.min(el.scrollHeight, 100)}px`
 }
 
+function focusTextareaFromInputWrapper(event: MouseEvent) {
+  if (event.defaultPrevented) return
+
+  const target = event.target instanceof Element ? event.target : null
+  if (!target) return
+
+  const interactiveTarget = target.closest([
+    'button',
+    'input',
+    'textarea',
+    '[role="button"]',
+    '.context-limit-editable',
+    '.input-toolbar',
+    '.resize-handle',
+  ].join(','))
+
+  if (interactiveTarget) return
+
+  textareaRef.value?.focus()
+}
+
 function applyConfiguredTextareaHeight() {
   if (manualTextareaResize.value) return
 
@@ -1001,6 +1022,7 @@ function isImage(type: string): boolean {
       @dragenter="handleDragEnter"
       @dragleave="handleDragLeave"
       @drop="handleDrop"
+      @mousedown="focusTextareaFromInputWrapper"
     >
       <input
         ref="fileInputRef"
@@ -1704,6 +1726,7 @@ function isImage(type: string): boolean {
   border-radius: 18px;
   padding: 22px 12px 9px;
   position: relative;
+  cursor: text;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.08);
   transition: border-color $transition-fast, box-shadow $transition-fast;
 
@@ -1740,7 +1763,7 @@ function isImage(type: string): boolean {
 
 .input-textarea {
   display: block;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
   width: 100%;
   background: none;
   border: none;
@@ -1751,7 +1774,7 @@ function isImage(type: string): boolean {
   line-height: 1.5;
   resize: none;
   max-height: 400px;
-  min-height: 24px;
+  min-height: 44px;
   padding: 0;
   overflow-y: auto;
 

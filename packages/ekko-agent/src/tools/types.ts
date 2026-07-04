@@ -4,6 +4,7 @@ export interface AgentToolContext {
   cwd?: string
   workspaceRoot?: string
   timeoutMs?: number
+  signal?: AbortSignal
 }
 
 export interface AgentToolResult {

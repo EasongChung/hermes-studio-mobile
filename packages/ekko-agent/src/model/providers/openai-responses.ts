@@ -41,10 +41,14 @@ interface OpenAIResponsesResponse {
   output?: Array<{
     type?: string
     content?: Array<{ type?: string; text?: string }>
+    summary?: Array<{ type?: string; text?: string }>
     name?: string
     call_id?: string
     arguments?: string
   }>
+  reasoning?: string
+  reasoning_text?: string
+  reasoning_summary?: string
   usage?: {
     input_tokens?: number
     output_tokens?: number
@@ -85,6 +89,8 @@ export class OpenAIResponsesModelClient implements ModelClient {
       this.fetchImpl,
       responsesUrl(this.config),
       toOpenAIResponsesPayload(this.config, { ...request, stream: false }),
+      undefined,
+      request.signal,
     )
     return normalizeOpenAIResponsesResponse(response)
   }
@@ -95,6 +101,8 @@ export class OpenAIResponsesModelClient implements ModelClient {
       this.fetchImpl,
       responsesUrl(this.config),
       toOpenAIResponsesPayload(this.config, { ...request, stream: true }),
+      undefined,
+      request.signal,
     )
 
     for await (const event of readServerSentEvents(response)) {
@@ -107,6 +115,14 @@ export class OpenAIResponsesModelClient implements ModelClient {
 
       if (chunk.type === 'response.output_text.delta' && typeof chunk.delta === 'string') {
         yield { type: 'text-delta', text: chunk.delta }
+      }
+      if (
+        (chunk.type === 'response.reasoning.delta' ||
+          chunk.type === 'response.reasoning_text.delta' ||
+          chunk.type === 'response.reasoning_summary_text.delta') &&
+        typeof chunk.delta === 'string'
+      ) {
+        yield { type: 'reasoning-delta', text: chunk.delta }
       }
       if (chunk.type === 'response.completed' && isPlainRecord(chunk.response)) {
         yield { type: 'done', response: normalizeOpenAIResponsesResponse(chunk.response as OpenAIResponsesResponse) }
@@ -139,11 +155,25 @@ export function normalizeOpenAIResponsesResponse(response: OpenAIResponsesRespon
     id: response.id,
     model: response.model,
     content: response.output_text ?? response.output?.flatMap(item => item.content ?? []).map(part => part.text ?? '').join('') ?? '',
+    reasoning: normalizeReasoning(response),
     toolCalls,
     usage: response.usage ? normalizeUsage(response.usage) : undefined,
     finishReason: response.status,
     raw: response,
   }
+}
+
+function normalizeReasoning(response: OpenAIResponsesResponse): string | undefined {
+  if (typeof response.reasoning === 'string' && response.reasoning) return response.reasoning
+  if (typeof response.reasoning_text === 'string' && response.reasoning_text) return response.reasoning_text
+  if (typeof response.reasoning_summary === 'string' && response.reasoning_summary) return response.reasoning_summary
+
+  const reasoning = response.output
+    ?.filter(item => item.type === 'reasoning')
+    .flatMap(item => [...(item.content ?? []), ...(item.summary ?? [])])
+    .map(part => part.text ?? '')
+    .join('')
+  return reasoning || undefined
 }
 
 function toOpenAIResponseInput(message: AgentMessage): OpenAIResponsesPayload['input'][number] {

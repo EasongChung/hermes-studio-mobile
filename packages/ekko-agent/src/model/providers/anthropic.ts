@@ -34,6 +34,7 @@ interface AnthropicPayload {
 
 type AnthropicContentBlock =
   | { type: 'text'; text: string }
+  | { type: 'thinking'; thinking: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
   | { type: 'tool_result'; tool_use_id: string; content: string }
 
@@ -78,6 +79,7 @@ export class AnthropicMessagesModelClient implements ModelClient {
       anthropicUrl(this.config),
       toAnthropicMessagesPayload(this.config, { ...request, stream: false }),
       anthropicHeaders(this.config),
+      request.signal,
     )
     return normalizeAnthropicResponse(response)
   }
@@ -89,6 +91,7 @@ export class AnthropicMessagesModelClient implements ModelClient {
       anthropicUrl(this.config),
       toAnthropicMessagesPayload(this.config, { ...request, stream: true }),
       anthropicHeaders(this.config),
+      request.signal,
     )
 
     const toolCallBlocks = new Map<number, { id: string; name: string; argumentsText: string }>()
@@ -109,6 +112,9 @@ export class AnthropicMessagesModelClient implements ModelClient {
       if (chunk.type === 'content_block_delta' && isPlainRecord(chunk.delta)) {
         if (chunk.delta.type === 'text_delta' && typeof chunk.delta.text === 'string') {
           yield { type: 'text-delta', text: chunk.delta.text }
+        }
+        if (chunk.delta.type === 'thinking_delta' && typeof chunk.delta.thinking === 'string') {
+          yield { type: 'reasoning-delta', text: chunk.delta.thinking }
         }
         if (chunk.delta.type === 'input_json_delta' && typeof chunk.delta.partial_json === 'string') {
           const index = typeof chunk.index === 'number' ? chunk.index : 0
@@ -150,6 +156,7 @@ export function normalizeAnthropicResponse(response: AnthropicResponse): ModelRe
     id: response.id,
     model: response.model,
     content: response.content?.filter(block => block.type === 'text').map(block => block.text).join('') ?? '',
+    reasoning: response.content?.filter(block => block.type === 'thinking').map(block => block.thinking).join('') || undefined,
     toolCalls: response.content?.filter(block => block.type === 'tool_use').map(block => ({
       id: block.id,
       name: block.name,

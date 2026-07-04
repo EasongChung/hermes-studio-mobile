@@ -12,15 +12,22 @@ export interface AgentRuntimeOptions {
   systemPrompt?: string
   runtimeInstructions?: string[]
   maxSteps?: number
+  maxModelRetries?: number
+  maxConsecutiveToolFailures?: number
+  toolDelayMs?: number
   toolContext?: AgentToolContext
   modelDefaults?: Omit<ModelRequest, 'messages' | 'tools' | 'stream'>
 }
 
 export interface AgentRuntimeRunInput {
   messages: AgentMessageInput[]
+  signal?: AbortSignal
   systemPrompt?: string
   skills?: AgentSkill[]
   maxSteps?: number
+  maxModelRetries?: number
+  maxConsecutiveToolFailures?: number
+  toolDelayMs?: number
   toolContext?: AgentToolContext
   model?: string
   temperature?: number

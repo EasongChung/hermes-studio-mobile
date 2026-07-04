@@ -3,11 +3,13 @@ import {
   AgentRuntime,
   AgentToolRegistry,
   DEFAULT_AGENT_MAX_STEPS,
+  DEFAULT_AGENT_MODEL_MAX_RETRIES,
   buildSystemPrompt,
 } from '../../packages/ekko-agent/src/index'
 import type {
   AgentTool,
   AgentToolProvider,
+  ModelEvent,
   ModelClient,
   ModelRequest,
   ModelResponse,
@@ -27,6 +29,24 @@ function modelClient(responder: (request: ModelRequest, call: number) => ModelRe
     },
     create: vi.fn(async (request: ModelRequest) => responder(request, ++call)),
     stream: vi.fn(),
+  }
+}
+
+function streamingModelClient(events: ModelEvent[]): ModelClient {
+  return {
+    provider: 'test',
+    requestStyle: 'custom-runtime',
+    capabilities: {
+      streaming: true,
+      tools: true,
+      vision: false,
+      jsonMode: false,
+      systemPrompt: true,
+    },
+    create: vi.fn(),
+    stream: vi.fn(async function *stream() {
+      for (const event of events) yield event
+    }),
   }
 }
 
@@ -53,6 +73,53 @@ describe('ekko-agent runtime', () => {
     expect(events).toEqual(['run.started', 'model.started', 'model.message', 'run.completed'])
   })
 
+  it('emits model reasoning before the assistant message', async () => {
+    const client = modelClient(() => ({
+      content: 'answer',
+      reasoning: 'thinking path',
+    }))
+    const runtime = new AgentRuntime({ modelClient: client, tools: new AgentToolRegistry() })
+    const events: string[] = []
+    const reasoning: string[] = []
+
+    const result = await runtime.run({
+      messages: ['hi'],
+      onEvent: event => {
+        events.push(event.type)
+        if (event.type === 'model.reasoning') reasoning.push(event.text)
+      },
+    })
+
+    expect(result.output.reasoning).toBe('thinking path')
+    expect(reasoning).toEqual(['thinking path'])
+    expect(events).toEqual(['run.started', 'model.started', 'model.reasoning', 'model.message', 'run.completed'])
+  })
+
+  it('streams model text deltas before the final assistant message', async () => {
+    const client = streamingModelClient([
+      { type: 'text-delta', text: 'Hel' },
+      { type: 'text-delta', text: 'lo' },
+      { type: 'done', response: { finishReason: 'stop' } },
+    ])
+    const runtime = new AgentRuntime({ modelClient: client, tools: new AgentToolRegistry() })
+    const events: string[] = []
+    const deltas: string[] = []
+
+    const result = await runtime.run({
+      messages: ['hi'],
+      onEvent: event => {
+        events.push(event.type)
+        if (event.type === 'model.delta') deltas.push(event.text)
+      },
+    })
+
+    expect(client.create).not.toHaveBeenCalled()
+    expect(client.stream).toHaveBeenCalledTimes(1)
+    expect(result.output.content).toBe('Hello')
+    expect(deltas).toEqual(['Hel', 'lo'])
+    expect(events).toEqual(['run.started', 'model.started', 'model.delta', 'model.delta', 'model.message', 'run.completed'])
+  })
+
   it('executes tool calls and continues the model loop', async () => {
     const echoTool: AgentTool = {
       definition: {
@@ -73,7 +140,7 @@ describe('ekko-agent runtime', () => {
           finishReason: 'tool_calls',
         }
       : { content: 'tool said from-tool', finishReason: 'stop' })
-    const runtime = new AgentRuntime({ modelClient: client, tools })
+    const runtime = new AgentRuntime({ modelClient: client, tools, toolDelayMs: 0 })
 
     const result = await runtime.run({ messages: ['use echo'] })
 
@@ -95,7 +162,7 @@ describe('ekko-agent runtime', () => {
           toolCalls: [{ id: 'call_missing', name: 'missing_tool', arguments: {} }],
         }
       : { content: 'handled missing tool' })
-    const runtime = new AgentRuntime({ modelClient: client, tools: new AgentToolRegistry(), maxSteps: 2 })
+    const runtime = new AgentRuntime({ modelClient: client, tools: new AgentToolRegistry(), maxSteps: 2, toolDelayMs: 0 })
 
     const result = await runtime.run({ messages: ['call missing'] })
 
@@ -106,6 +173,57 @@ describe('ekko-agent runtime', () => {
       content: 'Unknown tool: missing_tool',
     })
     expect(result.output.content).toBe('handled missing tool')
+  })
+
+  it('stops after consecutive tool failures', async () => {
+    const client = modelClient((_request, call) => ({
+      content: '',
+      toolCalls: [{ id: `call_missing_${call}`, name: 'missing_tool', arguments: {} }],
+    }))
+    const runtime = new AgentRuntime({
+      modelClient: client,
+      tools: new AgentToolRegistry(),
+      maxConsecutiveToolFailures: 2,
+      maxSteps: 10,
+      toolDelayMs: 0,
+    })
+    const events: string[] = []
+
+    const result = await runtime.run({
+      messages: ['call missing repeatedly'],
+      onEvent: event => events.push(event.type),
+    })
+
+    expect(result.output).toMatchObject({
+      content: 'Stopped after 2 consecutive tool failures.',
+      finishReason: 'tool_failure_limit',
+    })
+    expect(result.steps.filter(step => step.type === 'tool')).toHaveLength(2)
+    expect(client.create).toHaveBeenCalledTimes(2)
+    expect(events).toContain('run.tool_failure_limit')
+  })
+
+  it('passes abort signals into model requests', async () => {
+    const controller = new AbortController()
+    const client = modelClient((request) => {
+      expect(request.signal).toBe(controller.signal)
+      return { content: 'done' }
+    })
+    const runtime = new AgentRuntime({ modelClient: client, tools: new AgentToolRegistry() })
+
+    const result = await runtime.run({ messages: ['hi'], signal: controller.signal })
+
+    expect(result.output.content).toBe('done')
+  })
+
+  it('stops before a model request when aborted', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const client = modelClient(() => ({ content: 'should not run' }))
+    const runtime = new AgentRuntime({ modelClient: client, tools: new AgentToolRegistry() })
+
+    await expect(runtime.run({ messages: ['hi'], signal: controller.signal })).rejects.toThrow('Run aborted.')
+    expect(client.create).not.toHaveBeenCalled()
   })
 
   it('defaults maxSteps to 90', async () => {
@@ -122,6 +240,44 @@ describe('ekko-agent runtime', () => {
 
     expect(DEFAULT_AGENT_MAX_STEPS).toBe(90)
     expect(seen).toEqual([90])
+  })
+
+  it('retries each model step before continuing the loop', async () => {
+    const client = modelClient((_request, call) => {
+      if (call < 3) throw new Error(`temporary failure ${call}`)
+      return { content: 'recovered' }
+    })
+    const runtime = new AgentRuntime({ modelClient: client, tools: new AgentToolRegistry() })
+    const retries: number[] = []
+
+    const result = await runtime.run({
+      messages: ['hi'],
+      onEvent: event => {
+        if (event.type === 'model.retry') retries.push(event.retry)
+      },
+    })
+
+    expect(result.output.content).toBe('recovered')
+    expect(client.create).toHaveBeenCalledTimes(3)
+    expect(retries).toEqual([1, 2])
+  })
+
+  it('stops the run after three failed model retries', async () => {
+    const client = modelClient(() => {
+      throw new Error('still failing')
+    })
+    const runtime = new AgentRuntime({ modelClient: client, tools: new AgentToolRegistry() })
+    const events: string[] = []
+
+    await expect(runtime.run({
+      messages: ['hi'],
+      onEvent: event => events.push(event.type),
+    })).rejects.toThrow('still failing')
+
+    expect(DEFAULT_AGENT_MODEL_MAX_RETRIES).toBe(3)
+    expect(client.create).toHaveBeenCalledTimes(4)
+    expect(events.filter(event => event === 'model.retry')).toHaveLength(3)
+    expect(events.at(-1)).toBe('run.failed')
   })
 
   it('builds a system prompt from runtime, skills, tools, and user system messages', async () => {
@@ -179,10 +335,13 @@ describe('ekko-agent runtime', () => {
     await new AgentRuntime({ modelClient: client, tools }).run({ messages: ['hi'] })
   })
 
-  it('buildSystemPrompt can be used directly', () => {
-    expect(buildSystemPrompt({
+  it('buildSystemPrompt omits structured tool descriptions', () => {
+    const prompt = buildSystemPrompt({
       basePrompt: 'Base',
-      tools: [{ name: 'read_file' }],
-    })).toContain('- read_file')
+    })
+
+    expect(prompt).toContain('Base')
+    expect(prompt).not.toContain('Available Tools')
+    expect(prompt).not.toContain('read_file')
   })
 })

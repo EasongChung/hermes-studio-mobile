@@ -686,6 +686,7 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
     // Tool events
     chatRunSocket.on('tool.started', globalToolStartedHandler)
     chatRunSocket.on('tool.completed', globalToolCompletedHandler)
+    chatRunSocket.on('tool.failed', globalToolCompletedHandler)
     chatRunSocket.on('workspace.diff.completed', globalWorkspaceDiffCompletedHandler)
     chatRunSocket.on('subagent.start', globalSubagentEventHandler)
     chatRunSocket.on('subagent.tool', globalSubagentEventHandler)

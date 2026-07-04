@@ -67,6 +67,40 @@ describe('ekko-agent tools', () => {
     })
   })
 
+  it('normalizes shell-like terminal command strings when args are omitted', async () => {
+    const terminal = new TerminalExecTool()
+
+    await expect(terminal.execute({
+      command: `${process.execPath} -e "process.stdout.write(process.argv[1])" hello-split`,
+    }, { workspaceRoot })).resolves.toMatchObject({
+      ok: true,
+      content: 'hello-split',
+      data: {
+        command: process.execPath,
+        args: ['-e', 'process.stdout.write(process.argv[1])', 'hello-split'],
+        exitCode: 0,
+      },
+    })
+  })
+
+  it('does not start terminal commands when the signal is already aborted', async () => {
+    const terminal = new TerminalExecTool()
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(terminal.execute({
+      command: process.execPath,
+      args: ['-e', 'process.stdout.write("should-not-run")'],
+    }, { workspaceRoot, signal: controller.signal })).resolves.toMatchObject({
+      ok: false,
+      content: 'Command aborted.',
+      error: 'Command aborted.',
+      data: {
+        aborted: true,
+      },
+    })
+  })
+
   it('reports non-zero terminal exits without throwing', async () => {
     const terminal = new TerminalExecTool()
 

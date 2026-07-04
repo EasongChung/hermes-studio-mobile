@@ -3,16 +3,15 @@ import { inspect } from 'util'
 import {
   AgentRuntime,
   createModelClient,
+  resolveModelProviderConfigs,
   type AgentMessage,
   type AgentToolCall,
   type ModelClient,
   type ModelEvent,
   type AgentRuntimeEvent,
   type ModelProviderConfig,
-  type ModelProviderType,
   type ModelRequest,
   type ModelResponse,
-  type ModelRequestStyle,
 } from '../../../../../ekko-agent/src'
 import { createSession, addMessage, getSession, updateSessionStats } from '../../../db/hermes/session-store'
 import { logger } from '../../logger'
@@ -54,24 +53,6 @@ function isEkkoAgentId(data: EkkoAgentRunSocketData): boolean {
   return data.coding_agent_id === 'ekko-agent' || data.agent_id === 'ekko-agent'
 }
 
-function requestStyleForConfig(provider: string, baseUrl: string, apiMode?: string): ModelRequestStyle {
-  const key = provider.toLowerCase()
-  const url = baseUrl.toLowerCase()
-  if (apiMode === 'codex_responses') return 'openai-responses'
-  if (apiMode === 'anthropic_messages') return 'anthropic-messages'
-  if (key.includes('gemini') || key.includes('google') || url.includes('generativelanguage.googleapis.com')) return 'gemini-contents'
-  return 'openai-chat'
-}
-
-function providerTypeForStyle(provider: string, style: ModelRequestStyle): ModelProviderType {
-  const key = provider.toLowerCase()
-  if (style === 'anthropic-messages') return 'anthropic'
-  if (style === 'gemini-contents') return 'gemini'
-  if (key.includes('ollama')) return 'ollama'
-  if (key === 'openai') return 'openai'
-  return 'openai-compatible'
-}
-
 function toAgentMessages(messages: SessionState['messages']): AgentMessage[] {
   return messages
     .filter(message => message.role === 'user' || message.role === 'assistant' || message.role === 'system' || message.role === 'command')
@@ -80,9 +61,10 @@ function toAgentMessages(messages: SessionState['messages']): AgentMessage[] {
       return {
         role,
         content: contentBlocksToString(message.content as any),
+        reasoning: message.reasoning || message.reasoning_content || undefined,
       }
     })
-    .filter(message => message.content.trim().length > 0)
+    .filter(message => message.content.trim().length > 0 || (message.reasoning?.trim().length ?? 0) > 0)
 }
 
 function appendStateEvent(state: SessionState, event: string, payload: any): void {
@@ -148,6 +130,11 @@ function requestForProvider(request: ModelRequest, config: ModelProviderConfig):
   }
 }
 
+function shouldFallbackProtocol(err: unknown): boolean {
+  const statusCode = (err as { statusCode?: number } | null)?.statusCode
+  return statusCode === 400 || statusCode === 404 || statusCode === 405 || statusCode === 415 || statusCode === 422
+}
+
 function toStoredToolCall(toolCall: AgentToolCall) {
   return {
     id: toolCall.id,
@@ -159,7 +146,17 @@ function toStoredToolCall(toolCall: AgentToolCall) {
   }
 }
 
-function createConsoleModelClient(client: ModelClient, context: { sessionId: string; providerConfig: ModelProviderConfig }): ModelClient {
+function createConsoleModelClient(
+  client: ModelClient,
+  context: {
+    sessionId: string
+    providerConfig: ModelProviderConfig
+    fallback?: {
+      client: ModelClient
+      providerConfig: ModelProviderConfig
+    }
+  },
+): ModelClient {
   return {
     ...client,
     provider: client.provider,
@@ -188,6 +185,33 @@ function createConsoleModelClient(client: ModelClient, context: { sessionId: str
           request_style: client.requestStyle,
           error: errorPayload(err),
         }))
+        if (context.fallback && context.fallback.providerConfig.requestStyle !== context.providerConfig.requestStyle && shouldFallbackProtocol(err)) {
+          const fallbackRequest = requestForProvider(request, context.fallback.providerConfig)
+          console.warn('[ekko-agent] model request protocol fallback', consolePayload({
+            session_id: context.sessionId,
+            from_request_style: context.providerConfig.requestStyle,
+            to_request_style: context.fallback.providerConfig.requestStyle,
+            provider_config: redactProviderConfig(context.fallback.providerConfig),
+            request: fallbackRequest,
+          }))
+          try {
+            const response = await context.fallback.client.create(fallbackRequest)
+            console.log('[ekko-agent] model request fallback success', consolePayload({
+              session_id: context.sessionId,
+              provider: context.fallback.client.provider,
+              request_style: context.fallback.client.requestStyle,
+              response,
+            }))
+            return response
+          } catch (fallbackErr) {
+            console.error('[ekko-agent] model request fallback failed', consolePayload({
+              session_id: context.sessionId,
+              provider: context.fallback.client.provider,
+              request_style: context.fallback.client.requestStyle,
+              error: errorPayload(fallbackErr),
+            }))
+          }
+        }
         throw err
       }
     },
@@ -214,6 +238,34 @@ function createConsoleModelClient(client: ModelClient, context: { sessionId: str
           request_style: client.requestStyle,
           error: errorPayload(err),
         }))
+        if (context.fallback && context.fallback.providerConfig.requestStyle !== context.providerConfig.requestStyle && shouldFallbackProtocol(err)) {
+          const fallbackRequest = requestForProvider(request, context.fallback.providerConfig)
+          console.warn('[ekko-agent] model stream protocol fallback', consolePayload({
+            session_id: context.sessionId,
+            from_request_style: context.providerConfig.requestStyle,
+            to_request_style: context.fallback.providerConfig.requestStyle,
+            provider_config: redactProviderConfig(context.fallback.providerConfig),
+            request: fallbackRequest,
+          }))
+          try {
+            for await (const event of context.fallback.client.stream(fallbackRequest)) {
+              yield event
+            }
+            console.log('[ekko-agent] model stream fallback success', consolePayload({
+              session_id: context.sessionId,
+              provider: context.fallback.client.provider,
+              request_style: context.fallback.client.requestStyle,
+            }))
+            return
+          } catch (fallbackErr) {
+            console.error('[ekko-agent] model stream fallback failed', consolePayload({
+              session_id: context.sessionId,
+              provider: context.fallback.client.provider,
+              request_style: context.fallback.client.requestStyle,
+              error: errorPayload(fallbackErr),
+            }))
+          }
+        }
         throw err
       }
     },
@@ -246,6 +298,8 @@ export async function handleEkkoAgentRun(
   state.profile = profile
   state.source = data.source === 'workflow' ? 'workflow' : 'coding_agent'
   state.events = []
+  const abortController = new AbortController()
+  state.abortController = abortController
 
   const storedSession = getSession(sessionId)
   const modelConfig = await resolveBridgeRunModelConfig({
@@ -322,19 +376,25 @@ export async function handleEkkoAgentRun(
   }
 
   const baseUrl = data.baseUrl || data.base_url || ''
-  const requestStyle = requestStyleForConfig(modelConfig.provider, baseUrl, data.apiMode || data.api_mode)
-  const providerConfig: ModelProviderConfig = {
-    id: modelConfig.provider || 'openai',
-    type: providerTypeForStyle(modelConfig.provider, requestStyle),
-    requestStyle,
-    baseUrl: baseUrl || undefined,
-    apiKey: data.apiKey || data.api_key || undefined,
-    defaultModel: modelConfig.model,
+  const apiMode = data.apiMode || data.api_mode
+  const apiKey = data.apiKey || data.api_key || undefined
+  const { providerConfig, fallbackProviderConfig } = resolveModelProviderConfigs({
+    provider: modelConfig.provider,
+    baseUrl,
+    apiKey,
+    model: modelConfig.model,
+    apiMode,
     timeoutMs: 120_000,
-  }
+  })
   const modelClient = createConsoleModelClient(createModelClient(providerConfig), {
     sessionId,
     providerConfig,
+    fallback: fallbackProviderConfig
+      ? {
+          client: createModelClient(fallbackProviderConfig),
+          providerConfig: fallbackProviderConfig,
+        }
+      : undefined,
   })
   const runtime = new AgentRuntime({
     modelClient,
@@ -349,9 +409,11 @@ export async function handleEkkoAgentRun(
   })
 
   let assistantText = ''
+  let assistantReasoning = ''
   let runId = ''
   let usageInput = 0
   let usageOutput = 0
+  let sawStreamUsage = false
   const handleRuntimeEvent = (event: AgentRuntimeEvent) => {
     if ('runId' in event) runId = event.runId
     if (event.type === 'run.started') {
@@ -365,16 +427,39 @@ export async function handleEkkoAgentRun(
     } else if (event.type === 'model.message') {
       const text = event.message.content || ''
       if (text && !event.message.toolCalls?.length) {
+        const shouldEmitFullMessage = assistantText.length === 0
         assistantText = text
-        emit('message.delta', {
-          event: 'message.delta',
-          run_id: event.runId,
-          delta: text,
-        })
+        if (shouldEmitFullMessage) {
+          emit('message.delta', {
+            event: 'message.delta',
+            run_id: event.runId,
+            delta: text,
+          })
+        }
       }
-      if (event.message.usage) {
+      if (event.message.usage && !sawStreamUsage) {
         usageInput += event.message.usage.inputTokens || 0
         usageOutput += event.message.usage.outputTokens || 0
+      }
+    } else if (event.type === 'model.delta') {
+      assistantText += event.text
+      emit('message.delta', {
+        event: 'message.delta',
+        run_id: event.runId,
+        delta: event.text,
+      })
+    } else if (event.type === 'model.usage') {
+      sawStreamUsage = true
+      usageInput += event.usage.inputTokens || 0
+      usageOutput += event.usage.outputTokens || 0
+    } else if (event.type === 'model.reasoning') {
+      if (event.text) {
+        assistantReasoning += event.text
+        emit('reasoning.delta', {
+          event: 'reasoning.delta',
+          run_id: event.runId,
+          delta: event.text,
+        })
       }
     } else if (event.type === 'tool.started') {
       emit('tool.started', {
@@ -382,6 +467,7 @@ export async function handleEkkoAgentRun(
         run_id: event.runId,
         tool: event.toolName,
         name: event.toolName,
+        arguments: event.arguments,
         preview: JSON.stringify(event.arguments || {}),
         tool_call_id: event.toolCallId,
       })
@@ -391,8 +477,10 @@ export async function handleEkkoAgentRun(
         run_id: event.runId,
         tool: event.toolName,
         name: event.toolName,
+        output: event.result.content,
         preview: event.result.content,
         tool_call_id: event.toolCallId,
+        duration: Math.round(event.durationMs / 10) / 100,
         error: event.result.error,
       })
     }
@@ -403,11 +491,13 @@ export async function handleEkkoAgentRun(
     const result = await runtime.run({
       model: modelConfig.model,
       messages: toAgentMessages(state.messages),
+      signal: abortController.signal,
       onEvent: handleRuntimeEvent,
       toolContext: {
         cwd: workspace,
         workspaceRoot: workspace,
         timeoutMs: 120_000,
+        signal: abortController.signal,
       },
       metadata: {
         session_id: sessionId,
@@ -431,6 +521,8 @@ export async function handleEkkoAgentRun(
           tool_calls: toolCalls,
           timestamp,
           finish_reason: 'tool_calls',
+          reasoning: step.message.reasoning || null,
+          reasoning_content: step.message.reasoning || null,
         })
         state.messages.push({
           id: assistantId || state.messages.length + 1,
@@ -440,6 +532,8 @@ export async function handleEkkoAgentRun(
           tool_calls: toolCalls,
           timestamp,
           finish_reason: 'tool_calls',
+          reasoning: step.message.reasoning || null,
+          reasoning_content: step.message.reasoning || null,
         })
       } else if (step.type === 'tool') {
         const timestamp = Math.floor(Date.now() / 1000)
@@ -450,6 +544,7 @@ export async function handleEkkoAgentRun(
           tool_call_id: step.toolCallId,
           tool_name: step.toolName,
           timestamp,
+          finish_reason: step.result.ok ? null : 'error',
         })
         state.messages.push({
           id: toolId || state.messages.length + 1,
@@ -459,16 +554,20 @@ export async function handleEkkoAgentRun(
           tool_call_id: step.toolCallId,
           tool_name: step.toolName,
           timestamp,
+          finish_reason: step.result.ok ? null : 'error',
         })
       }
     }
-    if (assistantText.trim()) {
+    assistantReasoning = result.output.reasoning || assistantReasoning
+    if (assistantText.trim() || assistantReasoning.trim()) {
       const assistantId = addMessage({
         session_id: sessionId,
         role: 'assistant',
         content: assistantText,
         timestamp: Math.floor(Date.now() / 1000),
         finish_reason: result.output.finishReason || null,
+        reasoning: assistantReasoning || null,
+        reasoning_content: assistantReasoning || null,
       })
       state.messages.push({
         id: assistantId || state.messages.length + 1,
@@ -477,6 +576,8 @@ export async function handleEkkoAgentRun(
         content: assistantText,
         timestamp: Math.floor(Date.now() / 1000),
         finish_reason: result.output.finishReason || null,
+        reasoning: assistantReasoning || null,
+        reasoning_content: assistantReasoning || null,
       })
     }
     if (!usageInput && !usageOutput) {
@@ -509,6 +610,10 @@ export async function handleEkkoAgentRun(
       queue_remaining: state.queue.length,
     })
   } catch (err) {
+    if (abortController.signal.aborted || isAbortError(err)) {
+      logger.info('[chat-run-socket] ekko-agent run aborted for session %s', sessionId)
+      return
+    }
     const error = err instanceof Error ? err.message : String(err)
     logger.warn(err, '[chat-run-socket] ekko-agent run failed for session %s', sessionId)
     emit('run.failed', {
@@ -518,16 +623,22 @@ export async function handleEkkoAgentRun(
       queue_remaining: state.queue.length,
     })
   } finally {
-    state.isWorking = false
-    state.isAborting = false
-    state.runId = undefined
-    state.abortController = undefined
-    state.activeRunMarker = undefined
-    state.responseRun = undefined
-    state.profile = undefined
-    state.events = []
-    if (state.queue.length > 0) {
-      dequeueNextQueuedRun(socket, sessionId, profile)
+    if (!abortController.signal.aborted || state.abortController === abortController) {
+      state.isWorking = false
+      state.isAborting = false
+      state.runId = undefined
+      state.abortController = undefined
+      state.activeRunMarker = undefined
+      state.responseRun = undefined
+      state.profile = undefined
+      state.events = []
+      if (state.queue.length > 0) {
+        dequeueNextQueuedRun(socket, sessionId, profile)
+      }
     }
   }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'AbortError' || error.message === 'Run aborted.')
 }
