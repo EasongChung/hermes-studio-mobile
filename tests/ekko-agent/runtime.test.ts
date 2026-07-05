@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { join } from 'node:path'
 import {
   AgentRuntime,
   AgentToolRegistry,
@@ -183,6 +184,41 @@ describe('ekko-agent runtime', () => {
       { role: 'assistant', content: 'tool said from-tool' },
     ])
     expect(result.steps.map(step => step.type)).toEqual(['model', 'tool', 'model'])
+  })
+
+  it('discovers and executes MCP tools from the run tool context', async () => {
+    const client = modelClient((request, call) => {
+      if (call === 1) {
+        expect(request.tools?.some(tool => tool.name === 'fake_echo')).toBe(true)
+        return {
+          content: '',
+          toolCalls: [{ id: 'call_mcp', name: 'fake_echo', arguments: { text: 'hello' } }],
+          finishReason: 'tool_calls',
+        }
+      }
+      return { content: 'done', finishReason: 'stop' }
+    })
+    const runtime = new AgentRuntime({ modelClient: client, toolDelayMs: 0 })
+
+    const result = await runtime.run({
+      messages: ['use mcp'],
+      toolContext: {
+        mcpServers: {
+          fake: {
+            command: process.execPath,
+            args: [join(process.cwd(), 'tests/fixtures/fake-mcp-server.cjs')],
+          },
+        },
+      },
+    })
+
+    expect(result.messages).toMatchObject([
+      { role: 'system' },
+      { role: 'user', content: 'use mcp' },
+      { role: 'assistant', toolCalls: [{ id: 'call_mcp', name: 'fake_echo' }] },
+      { role: 'tool', toolCallId: 'call_mcp', name: 'fake_echo', content: 'mcp:hello' },
+      { role: 'assistant', content: 'done' },
+    ])
   })
 
   it('returns unknown tool failures as tool messages', async () => {

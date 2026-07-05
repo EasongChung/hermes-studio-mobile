@@ -24,7 +24,7 @@ export interface AgentTool<TInput extends Record<string, unknown> = Record<strin
 
 export interface AgentToolProvider {
   id: string
-  listTools(): Promise<AgentTool[]>
+  listTools(context?: AgentToolContext): Promise<AgentTool[]>
 }
 
 export class AgentToolError extends Error {

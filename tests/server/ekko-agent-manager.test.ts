@@ -43,7 +43,7 @@ describe('GlobalEkkoAgent', () => {
       modelClient: client,
       modelDefaults: { model: 'test-model' },
       metadata: { session_id: 'session-1' },
-      toolContext: { mcpServers: { test: { command: 'node' } } },
+      toolContext: { mcpServers: { test: { command: 'node', enabled: false } } },
     })
 
     const request = vi.mocked(client.create).mock.calls[0]?.[0] as ModelRequest

@@ -68,12 +68,12 @@ export class AgentRuntime {
     }
   }
 
-  async refreshTools(): Promise<void> {
-    await this.tools.refreshTools()
+  async refreshTools(context?: AgentToolContext): Promise<void> {
+    await this.tools.refreshTools(context)
   }
 
   async run(input: AgentRuntimeRunInput): Promise<AgentRuntimeRunResult> {
-    await this.refreshTools()
+    await this.refreshTools(this.runToolContext(input))
 
     const runId = randomUUID()
     const events: AgentRuntimeEvent[] = []
