@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -116,6 +116,8 @@ describe('desktop runtime paths', () => {
 
     const { runtimePlatformKey } = await import('../../packages/desktop/src/main/runtime-paths')
     createRuntime(runtimeDir, '0.15.1')
+    mkdirSync(join(webUiDir, 'dist', 'server'), { recursive: true })
+    writeFileSync(join(webUiDir, 'dist', 'server', 'index.js'), '')
     mkdirSync(join(homeDir, 'desktop-runtime'), { recursive: true })
     writeFileSync(join(homeDir, 'desktop-runtime', 'active-version.json'), JSON.stringify({
       schema: 1,
@@ -131,6 +133,34 @@ describe('desktop runtime paths', () => {
     expect(desktopRuntimeDir()).toBe(runtimeDir)
     expect(webuiDir()).toBe(webUiDir)
     expect(targetDesktopRuntimeDir()).toBe(join(homeDir, 'desktop-runtime', 'hermes', '0.18.0', runtimePlatformKey()))
+  })
+
+  it('falls back to the bundled Web UI when the active Web UI directory is incomplete', async () => {
+    const homeDir = tempDir()
+    const activeWebUiDir = join(homeDir, 'webui', '0.6.26')
+    const bundledWebUiDir = join(process.resourcesPath, 'webui')
+    process.env.HERMES_WEB_UI_HOME = homeDir
+    mockElectronApp.isPackaged = true
+
+    const { runtimePlatformKey } = await import('../../packages/desktop/src/main/runtime-paths')
+    mkdirSync(activeWebUiDir, { recursive: true })
+    mkdirSync(join(bundledWebUiDir, 'dist', 'server'), { recursive: true })
+    writeFileSync(join(bundledWebUiDir, 'dist', 'server', 'index.js'), '')
+    mkdirSync(join(homeDir, 'desktop-runtime'), { recursive: true })
+    writeFileSync(join(homeDir, 'desktop-runtime', 'active-version.json'), JSON.stringify({
+      schema: 1,
+      webUiVersion: '0.6.26',
+      webUiDirectory: activeWebUiDir,
+      platform: runtimePlatformKey(),
+    }))
+
+    const { webuiDir, webuiServerEntry } = await import('../../packages/desktop/src/main/paths')
+
+    expect(webuiDir()).toBe(bundledWebUiDir)
+    expect(webuiServerEntry()).toBe(join(bundledWebUiDir, 'dist', 'server', 'index.js'))
+    const active = JSON.parse(readFileSync(join(homeDir, 'desktop-runtime', 'active-version.json'), 'utf-8'))
+    expect(active.webUiDirectory).toBeUndefined()
+    expect(active.webUiVersion).toBeUndefined()
   })
 
   it('removes downloaded Web UI caches below 0.6.23 so startup falls back to the bundled Web UI', async () => {
