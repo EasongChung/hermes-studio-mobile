@@ -41,7 +41,7 @@ type ActiveRuntimeVersion = {
 
 function runtimeRequiredFiles(root: string): string[] {
   const python = isWin ? join(root, 'python', 'python.exe') : join(root, 'python', 'bin', 'python3')
-  const hermes = isWin ? join(root, 'python', 'Scripts', 'hermes.exe') : join(root, 'python', 'bin', 'hermes')
+  const hermes = isWin ? join(root, 'python', 'Scripts', 'hermes.cmd') : join(root, 'python', 'bin', 'hermes')
   const node = isWin ? join(root, 'node', 'node.exe') : join(root, 'node', 'bin', 'node')
   const files = [python, hermes, node]
   if (isWin) files.push(join(root, 'git', 'cmd', 'git.exe'))
@@ -348,7 +348,7 @@ export function bundledPython(): string {
 }
 
 export function hermesBin(): string {
-  return isWin ? join(pythonBinDir(), 'hermes.exe') : join(pythonBinDir(), 'hermes')
+  return isWin ? join(pythonBinDir(), 'hermes.cmd') : join(pythonBinDir(), 'hermes')
 }
 
 export function hermesBinExists(): boolean {

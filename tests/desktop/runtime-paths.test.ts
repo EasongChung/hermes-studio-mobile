@@ -15,6 +15,7 @@ vi.mock('electron', () => ({
 }))
 
 const originalEnv = { ...process.env }
+const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
 const tempDirs: string[] = []
 
 function tempDir(): string {
@@ -29,7 +30,7 @@ function createRuntime(root: string, version: string) {
     mkdirSync(join(root, 'node'), { recursive: true })
     mkdirSync(join(root, 'git', 'cmd'), { recursive: true })
     writeFileSync(join(root, 'python', 'python.exe'), '')
-    writeFileSync(join(root, 'python', 'Scripts', 'hermes.exe'), '')
+    writeFileSync(join(root, 'python', 'Scripts', 'hermes.cmd'), '')
     writeFileSync(join(root, 'node', 'node.exe'), '')
     writeFileSync(join(root, 'git', 'cmd', 'git.exe'), '')
   } else {
@@ -52,7 +53,7 @@ function createRuntimeWithoutManifest(root: string) {
     mkdirSync(join(root, 'node'), { recursive: true })
     mkdirSync(join(root, 'git', 'cmd'), { recursive: true })
     writeFileSync(join(root, 'python', 'python.exe'), '')
-    writeFileSync(join(root, 'python', 'Scripts', 'hermes.exe'), '')
+    writeFileSync(join(root, 'python', 'Scripts', 'hermes.cmd'), '')
     writeFileSync(join(root, 'node', 'node.exe'), '')
     writeFileSync(join(root, 'git', 'cmd', 'git.exe'), '')
   } else {
@@ -62,6 +63,10 @@ function createRuntimeWithoutManifest(root: string) {
     writeFileSync(join(root, 'python', 'bin', 'hermes'), '')
     writeFileSync(join(root, 'node', 'bin', 'node'), '')
   }
+}
+
+function setPlatform(platform: NodeJS.Platform): void {
+  Object.defineProperty(process, 'platform', { value: platform })
 }
 
 describe('desktop runtime paths', () => {
@@ -77,6 +82,7 @@ describe('desktop runtime paths', () => {
 
   afterEach(() => {
     process.env = { ...originalEnv }
+    if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform)
     vi.resetModules()
     for (const dir of tempDirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true })
@@ -257,5 +263,22 @@ describe('desktop runtime paths', () => {
 
     expect(desktopRuntimeDir()).toBe(runtimeDir)
     expect(targetDesktopRuntimeDir()).toBe(targetRuntimeDir)
+  })
+
+  it('treats hermes.cmd as the required Windows runtime entry point', async () => {
+    setPlatform('win32')
+    const homeDir = tempDir()
+    process.env.HERMES_WEB_UI_HOME = homeDir
+    mockElectronApp.isPackaged = true
+
+    const { runtimePlatformKey } = await import('../../packages/desktop/src/main/runtime-paths')
+    const runtimeDir = join(homeDir, 'desktop-runtime', 'hermes', '0.15.2', runtimePlatformKey())
+    createRuntime(runtimeDir, '0.15.2')
+
+    const { desktopRuntimeDir, hermesBin } = await import('../../packages/desktop/src/main/paths')
+
+    expect(desktopRuntimeDir()).toBe(runtimeDir)
+    expect(hermesBin()).toBe(join(runtimeDir, 'python', 'Scripts', 'hermes.cmd'))
+    expect(existsSync(join(runtimeDir, 'python', 'Scripts', 'hermes.exe'))).toBe(false)
   })
 })
