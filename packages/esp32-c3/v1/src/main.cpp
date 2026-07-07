@@ -69,21 +69,23 @@ constexpr uint32_t kBootDebounceMs = 80;
 constexpr uint32_t kBootInputArmDelayMs = 2500;
 constexpr uint32_t kBootLongPressMs = 360;
 constexpr uint32_t kBootDoubleClickMs = 320;
+constexpr uint32_t kVoiceStreamReleaseDebounceMs = 240;
 constexpr uint32_t kWifiDisconnectGraceMs = 8000;
 constexpr uint32_t kBatteryReadIntervalMs = 5000;
 constexpr bool kAutoOtaEnabled = false;
 constexpr uint32_t kVoiceRecordMs = 4000;
-constexpr uint32_t kVoiceStreamRecordMs = 10000;
+constexpr uint32_t kVoiceStreamRecordMs = 30000;
 constexpr uint32_t kVoiceRecordMinMs = 300;
-constexpr uint32_t kVoiceRecordHardTimeoutMs = 12000;
+constexpr uint32_t kVoiceRecordHardTimeoutMs = 35000;
 constexpr uint32_t kVoiceVadRmsStart = 190;
 constexpr uint32_t kVoiceVadPeakStart = 480;
 constexpr uint32_t kVoiceVadActiveThreshold = 260;
 constexpr uint32_t kVoiceVadMinActiveSamples = 16;
 constexpr int kVoiceInputGainPermille = 2800;
 constexpr int kAudioSampleRate = 24000;
+constexpr int kVoiceInputSampleRate = 15500;
 constexpr int kMcuAudioDefaultSampleRate = 24000;
-constexpr size_t kVoiceRecordMaxFrames = (kAudioSampleRate * kVoiceRecordMs) / 1000UL;
+constexpr size_t kVoiceRecordMaxFrames = (kVoiceInputSampleRate * kVoiceRecordMs) / 1000UL;
 constexpr size_t kVoiceRecordBufferBytes = 44 + kVoiceRecordMaxFrames * sizeof(int16_t);
 constexpr uint8_t kDefaultOutputVolumePercent = 70;
 constexpr int16_t kVoiceOutputLimit = 24000;
@@ -1006,8 +1008,8 @@ void writeWavHeader(uint8_t *wav, uint32_t dataBytes) {
   putLe32(wav + 16, 16);
   putLe16(wav + 20, 1);
   putLe16(wav + 22, 1);
-  putLe32(wav + 24, kAudioSampleRate);
-  putLe32(wav + 28, kAudioSampleRate * 2);
+  putLe32(wav + 24, kVoiceInputSampleRate);
+  putLe32(wav + 28, kVoiceInputSampleRate * 2);
   putLe16(wav + 32, 2);
   putLe16(wav + 34, 16);
   memcpy(wav + 36, "data", 4);
@@ -1366,7 +1368,7 @@ bool recordVoiceWav(uint8_t **outWav, size_t *outLen) {
   audioBusy = true;
   setPowerAmp(false);
   es8311UpdateBits(0x31, 0x60, 0x60);
-  setI2sSampleRate(kAudioSampleRate);
+  setI2sSampleRate(kVoiceInputSampleRate);
   i2s_zero_dma_buffer(kI2sPort);
   setOledStatus(OledMode::Think, F("LISTEN"), F("SAY NOW"), 0);
 
@@ -2929,7 +2931,7 @@ bool playPcmMonoStream(WiFiClient *stream, int contentLength, uint32_t sampleRat
   audioBusy = true;
   setPowerAmp(true);
   es8311UpdateBits(0x31, 0x60, 0x00);
-  setI2sSampleRate(kAudioSampleRate);
+  setI2sSampleRate(sampleRate);
 
   constexpr size_t kInputChunkBytes = 512;
   constexpr size_t kMonoFrameBytes = 2;
@@ -3042,7 +3044,7 @@ bool playRecordedWav(uint8_t *wav, size_t wavLen) {
   audioBusy = true;
   setPowerAmp(true);
   es8311UpdateBits(0x31, 0x60, 0x00);
-  setI2sSampleRate(kAudioSampleRate);
+  setI2sSampleRate(kVoiceInputSampleRate);
   setOledStatus(OledMode::Think, F("PLAY"), F("REC"), 0);
 
   uint32_t playedBytes = 0;
@@ -3738,7 +3740,7 @@ bool broadcastMcuVoiceStreamStart(const String &interactionId) {
   json += F("{\"type\":\"voice.stream.start\",\"interactionId\":\"");
   json += escapeJson(interactionId);
   json += F("\",\"mimeType\":\"audio/pcm\",\"sampleRate\":");
-  json += kAudioSampleRate;
+  json += kVoiceInputSampleRate;
   json += F(",\"channels\":1,\"bitsPerSample\":16,\"profile\":\"");
   json += escapeJson(selectedProfile);
   json += F("\"}");
@@ -3819,7 +3821,7 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   audioBusy = true;
   setPowerAmp(false);
   es8311UpdateBits(0x31, 0x60, 0x60);
-  setI2sSampleRate(kAudioSampleRate);
+  setI2sSampleRate(kVoiceInputSampleRate);
   i2s_zero_dma_buffer(kI2sPort);
   setOledStatus(OledMode::Think, F("LISTEN"), F("SAY NOW"), 0);
 
@@ -3841,7 +3843,7 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   voiceRecordRms = 0;
   voiceRecordPeak = 0;
   voiceRecordActiveSamples = 0;
-  const uint32_t maxFrames = (kAudioSampleRate * kVoiceStreamRecordMs) / 1000UL;
+  const uint32_t maxFrames = (kVoiceInputSampleRate * kVoiceStreamRecordMs) / 1000UL;
   const uint32_t startedAt = millis();
   uint32_t releaseStartedAt = 0;
   uint32_t lastRecordOledAtMs = startedAt;
@@ -3867,10 +3869,10 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
                         F(", empty=") + String(emptyReads);
       break;
     }
-    if (framesDone > 0 && loopNow - startedAt > kBootDebounceMs) {
+    if (framesDone > 0 && loopNow - startedAt > kVoiceRecordMinMs) {
       if (digitalRead(kPinBoot) != LOW) {
         if (releaseStartedAt == 0) releaseStartedAt = loopNow;
-        if (loopNow - releaseStartedAt >= kBootDebounceMs) {
+        if (loopNow - releaseStartedAt >= kVoiceStreamReleaseDebounceMs) {
           stopReason = "release";
           break;
         }

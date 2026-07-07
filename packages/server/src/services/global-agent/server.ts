@@ -165,7 +165,7 @@ interface McuVoiceStreamState {
   channels: number
   bitsPerSample: number
   bytes: number
-  chunks: Buffer[]
+  chunks: Array<{ offset: number; chunk: Buffer }>
   userToken: string
 }
 
@@ -1439,7 +1439,9 @@ export class GlobalAgentServer {
     if (!data) return
     const chunk = Buffer.from(data, 'base64')
     if (!chunk.length) return
-    stream.chunks.push(chunk)
+    const offset = Number(payload.offset)
+    const normalizedOffset = Number.isFinite(offset) && offset >= 0 ? offset : stream.bytes
+    stream.chunks.push({ offset: normalizedOffset, chunk })
     stream.bytes += chunk.byteLength
   }
 
@@ -1450,13 +1452,51 @@ export class GlobalAgentServer {
       this.emitMcuEvent({ type: 'interaction.status', status: 'failed', text: 'missing voice stream metadata' }, { clientId })
       return
     }
-    const pcm = Buffer.concat(stream.chunks, stream.bytes)
+    const expectedBytes = Number(payload.bytes)
+    const sortedChunks = [...stream.chunks].sort((a, b) => a.offset - b.offset)
+    let expectedOffset = 0
+    for (const part of sortedChunks) {
+      if (part.offset !== expectedOffset) {
+        logger.warn({
+          clientId,
+          interactionId: stream.interactionId,
+          expectedOffset,
+          actualOffset: part.offset,
+          receivedBytes: stream.bytes,
+          expectedBytes: Number.isFinite(expectedBytes) ? expectedBytes : undefined,
+        }, '[global-agent] MCU voice stream has a chunk gap')
+        this.emitMcuEvent({
+          type: 'interaction.status',
+          interactionId: stream.interactionId,
+          status: 'failed',
+          text: 'voice stream chunk gap',
+        }, { clientId })
+        return
+      }
+      expectedOffset += part.chunk.byteLength
+    }
+    const pcm = Buffer.concat(sortedChunks.map(part => part.chunk), stream.bytes)
     logger.info({
       clientId,
       bytes: pcm.length,
-      expectedBytes: Number(payload.bytes),
+      expectedBytes,
       interactionId: stream.interactionId,
     }, '[global-agent] MCU voice stream completed')
+    if (Number.isFinite(expectedBytes) && expectedBytes >= 0 && pcm.length !== expectedBytes) {
+      logger.warn({
+        clientId,
+        interactionId: stream.interactionId,
+        bytes: pcm.length,
+        expectedBytes,
+      }, '[global-agent] MCU voice stream byte count mismatch')
+      this.emitMcuEvent({
+        type: 'interaction.status',
+        interactionId: stream.interactionId,
+        status: 'failed',
+        text: 'voice stream incomplete',
+      }, { clientId })
+      return
+    }
     if (!pcm.length) {
       this.emitMcuEvent({
         type: 'interaction.status',
