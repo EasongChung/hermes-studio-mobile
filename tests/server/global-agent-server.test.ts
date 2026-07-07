@@ -679,11 +679,6 @@ describe('GlobalAgentServer', () => {
       url: expect.stringMatching(/^\/api\/hermes\/mcu\/audio\/[a-f0-9-]+\.pcm$/),
       completionManagedByServer: true,
     }))
-    agentSocket.__handlers.get('audio.done')?.({
-      interactionId: 'voice-1',
-      segmentId: 'voice-1-tts-1',
-    })
-
     localSocket.__handlers.get('tool.completed')?.({ tool: 'weather' })
     localSocket.__handlers.get('message.delta')?.({ delta: '结果如下：\n| 名称 | 值 |\n' })
     localSocket.__handlers.get('message.delta')?.({ delta: '| --- | --- |\n| foo | 1 |\n请确认。' })
@@ -702,6 +697,21 @@ describe('GlobalAgentServer', () => {
       url: expect.stringMatching(/^\/api\/hermes\/mcu\/audio\/[a-f0-9-]+\.pcm$/),
       completionManagedByServer: true,
     }))
+    expect(agentSocket.emit).not.toHaveBeenCalledWith('interaction.status', expect.objectContaining({
+      interactionId: 'voice-1',
+      status: 'completed',
+    }))
+    agentSocket.__handlers.get('audio.done')?.({
+      interactionId: 'voice-1',
+      segmentId: 'voice-1-tts-1',
+    })
+    agentSocket.__handlers.get('audio.done')?.({
+      interactionId: 'voice-1',
+      segmentId: 'voice-1-tts-2',
+    })
+    await waitForMockCallWith(agentSocket.emit, ([event, payload]) =>
+      event === 'interaction.status' && (payload as { status?: string })?.status === 'completed',
+    )
   })
 
   it('aborts in-flight MCU TTS synthesis when the device interrupts playback', async () => {
