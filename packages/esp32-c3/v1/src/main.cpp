@@ -2793,6 +2793,7 @@ bool sendRawWsFrame(uint8_t opcode, const uint8_t *data, size_t length) {
     }
     if (mcuWsClient->write(buffer, n) != n) return false;
     offset += n;
+    yield();
   }
   return true;
 }
@@ -4586,6 +4587,7 @@ void connectMcuSocketClient() {
     Serial.printf("Socket.IO tcp connect failed host=%s port=%u\n", host.c_str(), port);
     return;
   }
+  mcuWsClient->setNoDelay(true);
 
   String socketPath = F("/socket.io/?EIO=4&transport=websocket");
   String key = F("dGhlIHNhbXBsZSBub25jZQ==");
