@@ -2773,108 +2773,6 @@ bool writeMcuWsBytes(const uint8_t *data, size_t length, uint32_t timeoutMs = 15
   return true;
 }
 
-bool writeMcuWsMaskedBytes(const uint8_t *data, size_t length, const uint8_t mask[4], size_t *maskOffset) {
-  if (!data && length > 0) return false;
-  if (!maskOffset) return false;
-  constexpr size_t kChunk = 256;
-  uint8_t buffer[kChunk];
-  size_t offset = 0;
-  while (offset < length) {
-    size_t n = min(kChunk, length - offset);
-    for (size_t i = 0; i < n; ++i) {
-      buffer[i] = data[offset + i] ^ mask[(*maskOffset + i) & 3];
-    }
-    if (!writeMcuWsBytes(buffer, n)) return false;
-    *maskOffset += n;
-    offset += n;
-    yield();
-  }
-  return true;
-}
-
-bool writeMcuWsMaskedString(const String &text, const uint8_t mask[4], size_t *maskOffset) {
-  return writeMcuWsMaskedBytes(reinterpret_cast<const uint8_t *>(text.c_str()), text.length(), mask, maskOffset);
-}
-
-size_t base64EncodedLength(size_t length) {
-  return ((length + 2) / 3) * 4;
-}
-
-bool writeMcuWsMaskedBase64(const uint8_t *data, size_t length, const uint8_t mask[4], size_t *maskOffset) {
-  static const char kBase64Table[] =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  if (!data && length > 0) return false;
-  char out[256];
-  size_t outLen = 0;
-  auto flush = [&]() -> bool {
-    if (outLen == 0) return true;
-    bool ok = writeMcuWsMaskedBytes(reinterpret_cast<const uint8_t *>(out), outLen, mask, maskOffset);
-    outLen = 0;
-    return ok;
-  };
-  auto append4 = [&](char a, char b, char c, char d) -> bool {
-    if (outLen + 4 > sizeof(out) && !flush()) return false;
-    out[outLen++] = a;
-    out[outLen++] = b;
-    out[outLen++] = c;
-    out[outLen++] = d;
-    return true;
-  };
-  size_t offset = 0;
-  while (offset + 3 <= length) {
-    uint32_t value = (static_cast<uint32_t>(data[offset]) << 16) |
-                     (static_cast<uint32_t>(data[offset + 1]) << 8) |
-                     static_cast<uint32_t>(data[offset + 2]);
-    if (!append4(kBase64Table[(value >> 18) & 0x3F],
-                 kBase64Table[(value >> 12) & 0x3F],
-                 kBase64Table[(value >> 6) & 0x3F],
-                 kBase64Table[value & 0x3F])) {
-      return false;
-    }
-    offset += 3;
-  }
-  size_t remaining = length - offset;
-  if (remaining > 0) {
-    uint8_t b0 = data[offset];
-    uint8_t b1 = remaining > 1 ? data[offset + 1] : 0;
-    uint32_t value = (static_cast<uint32_t>(b0) << 16) | (static_cast<uint32_t>(b1) << 8);
-    if (!append4(kBase64Table[(value >> 18) & 0x3F],
-                 kBase64Table[(value >> 12) & 0x3F],
-                 remaining > 1 ? kBase64Table[(value >> 6) & 0x3F] : '=',
-                 '=')) {
-      return false;
-    }
-  }
-  return flush();
-}
-
-bool sendRawWsTextWithBase64Data(const String &prefix, const uint8_t *data, size_t length, const String &suffix) {
-  if (!mcuWsClient->connected() || !data || length == 0) return false;
-  size_t payloadLength = prefix.length() + base64EncodedLength(length) + suffix.length();
-  if (payloadLength > 0xFFFF) return false;
-
-  uint8_t header[14];
-  size_t headerLen = 0;
-  header[headerLen++] = 0x81;
-  if (payloadLength < 126) {
-    header[headerLen++] = 0x80 | static_cast<uint8_t>(payloadLength);
-  } else {
-    header[headerLen++] = 0x80 | 126;
-    header[headerLen++] = static_cast<uint8_t>((payloadLength >> 8) & 0xFF);
-    header[headerLen++] = static_cast<uint8_t>(payloadLength & 0xFF);
-  }
-
-  uint8_t mask[4];
-  for (uint8_t i = 0; i < 4; ++i) mask[i] = static_cast<uint8_t>(esp_random() & 0xFF);
-  for (uint8_t i = 0; i < 4; ++i) header[headerLen++] = mask[i];
-  if (!writeMcuWsBytes(header, headerLen)) return false;
-
-  size_t maskOffset = 0;
-  return writeMcuWsMaskedString(prefix, mask, &maskOffset) &&
-         writeMcuWsMaskedBase64(data, length, mask, &maskOffset) &&
-         writeMcuWsMaskedString(suffix, mask, &maskOffset);
-}
-
 bool sendRawWsFrame(uint8_t opcode, const uint8_t *data, size_t length) {
   if (!mcuWsClient->connected()) return false;
   uint8_t header[14];
@@ -3940,29 +3838,27 @@ bool broadcastMcuVoiceStreamChunk(const String &interactionId, const uint8_t *da
                   static_cast<unsigned>(length), static_cast<unsigned long>(offset));
     return false;
   }
-  String payloadPrefix;
-  payloadPrefix.reserve(260);
-  payloadPrefix += F("42/global-agent,[\"voice.stream.chunk\",{\"type\":\"voice.stream.chunk\",\"interactionId\":\"");
-  payloadPrefix += escapeJson(interactionId);
-  payloadPrefix += F("\",\"offset\":");
-  payloadPrefix += offset;
-  payloadPrefix += F(",\"bytes\":");
-  payloadPrefix += length;
-  payloadPrefix += F(",\"data\":\"");
-  const String payloadSuffix = F("\"}]");
+  String payload;
+  payload.reserve(280);
+  payload += F("451-/global-agent,[\"voice.stream.chunk\",{\"type\":\"voice.stream.chunk\",\"interactionId\":\"");
+  payload += escapeJson(interactionId);
+  payload += F("\",\"offset\":");
+  payload += offset;
+  payload += F(",\"bytes\":");
+  payload += length;
+  payload += F(",\"data\":{\"_placeholder\":true,\"num\":0}}]");
   uint32_t sendStartedAt = millis();
-  bool sent = sendRawWsTextWithBase64Data(payloadPrefix, data, length, payloadSuffix);
+  bool sent = sendRawWsText(payload) && sendRawWsFrame(0x2, data, length);
   uint32_t sendMs = millis() - sendStartedAt;
   if (sendMs > 25 || (offset % (kVoiceStreamChunkFrames * sizeof(int16_t) * 8UL)) == 0) {
-    Serial.printf("Voice stream send offset=%lu len=%u b64=%u ms=%lu heap=%lu min_heap=%lu\n",
+    Serial.printf("Voice stream binary send offset=%lu len=%u ms=%lu heap=%lu min_heap=%lu\n",
                   static_cast<unsigned long>(offset), static_cast<unsigned>(length),
-                  static_cast<unsigned>(base64EncodedLength(length)),
                   static_cast<unsigned long>(sendMs), static_cast<unsigned long>(ESP.getFreeHeap()),
                   static_cast<unsigned long>(ESP.getMinFreeHeap()));
   }
   if (!sent) {
-    Serial.printf("Voice stream chunk send failed len=%u b64=%u offset=%lu heap=%lu ws=%d namespace=%d\n",
-                  static_cast<unsigned>(length), static_cast<unsigned>(base64EncodedLength(length)),
+    Serial.printf("Voice stream binary chunk send failed len=%u offset=%lu heap=%lu ws=%d namespace=%d\n",
+                  static_cast<unsigned>(length),
                   static_cast<unsigned long>(offset), static_cast<unsigned long>(ESP.getFreeHeap()),
                   wsReady ? 1 : 0, mcuSocketNamespaceReady ? 1 : 0);
   }

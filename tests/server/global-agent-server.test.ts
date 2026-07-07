@@ -495,6 +495,59 @@ describe('GlobalAgentServer', () => {
     }))
   })
 
+  it('accepts MCU voice stream chunks as Socket.IO binary payloads', async () => {
+    authMocks.authenticateUserToken.mockResolvedValue({ id: 7, username: 'ada', role: 'user' })
+    authMocks.userCanAccessProfile.mockReturnValue(true)
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    const nsp = createMockNamespace()
+    const io = { of: vi.fn(() => nsp) }
+    const { GlobalAgentServer } = await import('../../packages/server/src/services/global-agent/server')
+
+    const server = new GlobalAgentServer(io as any, {
+      fetchImpl: fetchImpl as any,
+      localBaseUrl: 'http://127.0.0.1:8647',
+    })
+    server.init()
+
+    const agentSocket = createMockSocket('jwt-agent-socket', {
+      token: 'user-jwt',
+      role: 'hermes-studio',
+      instanceId: 'device-1',
+      profile: 'research',
+    })
+    await new Promise<void>((resolve, reject) => {
+      nsp.__middleware[0](agentSocket, (err?: Error) => err ? reject(err) : resolve())
+    })
+    nsp.__handlers.get('connection')?.(agentSocket)
+
+    const pcm = Uint8Array.from([1, 0, 2, 0, 3, 0, 4, 0])
+    agentSocket.__handlers.get('voice.stream.start')?.({
+      interactionId: 'voice-binary',
+      sampleRate: 16000,
+      channels: 1,
+      bitsPerSample: 16,
+    })
+    agentSocket.__handlers.get('voice.stream.chunk')?.({
+      interactionId: 'voice-binary',
+      offset: 0,
+      bytes: pcm.byteLength,
+      data: pcm,
+    })
+    agentSocket.__handlers.get('voice.stream.end')?.({
+      interactionId: 'voice-binary',
+      bytes: pcm.byteLength,
+    })
+
+    await waitForMockCalls(fetchImpl, 1)
+    const request = fetchImpl.mock.calls[0][1] as RequestInit
+    const wav = Buffer.from(request.body as Uint8Array)
+    expect(wav.readUInt32LE(40)).toBe(pcm.byteLength)
+    expect(wav.subarray(44)).toEqual(Buffer.from(pcm))
+  })
+
   it('ignores stale MCU voice stream chunks and ends from previous interactions', async () => {
     authMocks.authenticateUserToken.mockResolvedValue({ id: 7, username: 'ada', role: 'user' })
     authMocks.userCanAccessProfile.mockReturnValue(true)

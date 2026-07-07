@@ -1499,12 +1499,20 @@ export class GlobalAgentServer {
       ack(false, 'stale_interaction')
       return
     }
-    const data = typeof payload.data === 'string' ? payload.data : ''
-    if (!data) {
+    const data = payload.data
+    let chunk: Buffer
+    if (typeof data === 'string') {
+      chunk = Buffer.from(data, 'base64')
+    } else if (Buffer.isBuffer(data)) {
+      chunk = Buffer.from(data)
+    } else if (data instanceof Uint8Array) {
+      chunk = Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+    } else if (data instanceof ArrayBuffer) {
+      chunk = Buffer.from(data)
+    } else {
       ack(false, 'missing_data')
       return
     }
-    const chunk = Buffer.from(data, 'base64')
     if (!chunk.length) {
       ack(false, 'empty_data')
       return

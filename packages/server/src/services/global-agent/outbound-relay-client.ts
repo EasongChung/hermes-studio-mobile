@@ -453,9 +453,20 @@ class McuSocketIoRelayClient {
       return
     }
     if (event.type === 'voice.stream.chunk') {
-      const data = typeof event.data === 'string' ? event.data : ''
-      if (!data) return
-      const audio = Buffer.from(data, 'base64')
+      const data = event.data
+      let audio: Buffer
+      if (typeof data === 'string') {
+        audio = Buffer.from(data, 'base64')
+      } else if (Buffer.isBuffer(data)) {
+        audio = Buffer.from(data)
+      } else if (data instanceof Uint8Array) {
+        audio = Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+      } else if (data instanceof ArrayBuffer) {
+        audio = Buffer.from(data)
+      } else {
+        return
+      }
+      if (!audio.length) return
       if (this.pendingVoiceStream) {
         const chunkInteractionId = typeof event.interactionId === 'string' ? event.interactionId.trim() : ''
         if (chunkInteractionId && chunkInteractionId !== this.pendingVoiceStream.interactionId) {
@@ -479,7 +490,7 @@ class McuSocketIoRelayClient {
           bytes: audio.length,
           seq: Number.isFinite(Number(event.seq)) ? Math.floor(Number(event.seq)) : undefined,
           crc32: Number.isFinite(Number(event.crc32)) ? Math.floor(Number(event.crc32)) >>> 0 : undefined,
-          data,
+          data: audio,
         })
         return
       }
