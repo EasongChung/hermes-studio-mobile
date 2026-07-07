@@ -83,7 +83,7 @@ constexpr uint32_t kVoiceVadActiveThreshold = 260;
 constexpr uint32_t kVoiceVadMinActiveSamples = 16;
 constexpr int kVoiceInputGainPermille = 2800;
 constexpr int kAudioSampleRate = 24000;
-constexpr int kVoiceInputSampleRate = 15500;
+constexpr int kVoiceInputSampleRate = 16000;
 constexpr int kMcuAudioDefaultSampleRate = 24000;
 constexpr size_t kVoiceRecordMaxFrames = (kVoiceInputSampleRate * kVoiceRecordMs) / 1000UL;
 constexpr size_t kVoiceRecordBufferBytes = 44 + kVoiceRecordMaxFrames * sizeof(int16_t);
@@ -1195,8 +1195,8 @@ bool configureI2sBus() {
   config.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
   config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
   config.intr_alloc_flags = 0;
-  config.dma_buf_count = 6;
-  config.dma_buf_len = 256;
+  config.dma_buf_count = 16;
+  config.dma_buf_len = 512;
   config.use_apll = false;
   config.tx_desc_auto_clear = true;
   config.fixed_mclk = 0;
@@ -3826,7 +3826,7 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   setOledStatus(OledMode::Think, F("LISTEN"), F("SAY NOW"), 0);
 
   constexpr size_t kReadBytes = 512;
-  constexpr size_t kPcmChunkFrames = 512;
+  constexpr size_t kPcmChunkFrames = 1024;
   uint8_t readBuffer[kReadBytes];
   int16_t pcmChunk[kPcmChunkFrames];
   size_t pcmChunkFrames = 0;
