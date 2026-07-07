@@ -103,6 +103,7 @@ const MCU_FORWARD_EVENTS = [
   'voice.stream.start',
   'voice.stream.chunk',
   'voice.stream.end',
+  'voice.stream.abort',
   'voice.recorded',
   'interaction.status',
   'tool.started',
@@ -1394,6 +1395,11 @@ export class GlobalAgentServer {
       return
     }
 
+    if (event === 'voice.stream.abort') {
+      this.handleMcuVoiceStreamAbort(clientId, payload)
+      return
+    }
+
     if (event === 'audio.done' || event === 'audio.interrupted' || event === 'audio.dropped') {
       if (event === 'audio.interrupted' && typeof payload.interactionId === 'string') {
         this.abortActiveMcuRun(payload.interactionId)
@@ -1559,6 +1565,23 @@ export class GlobalAgentServer {
         text: err instanceof Error ? err.message : String(err),
       }, { clientId })
     }
+  }
+
+  private handleMcuVoiceStreamAbort(clientId: string, payload: Record<string, unknown>): void {
+    const stream = this.mcuVoiceStreams.get(clientId)
+    this.mcuVoiceStreams.delete(clientId)
+    const interactionId = typeof payload.interactionId === 'string' && payload.interactionId.trim()
+      ? payload.interactionId.trim()
+      : stream?.interactionId
+    const reason = typeof payload.reason === 'string' && payload.reason.trim()
+      ? payload.reason.trim()
+      : 'aborted'
+    this.emitMcuEvent({
+      type: 'interaction.status',
+      interactionId,
+      status: 'failed',
+      text: `voice stream ${reason}`,
+    }, { clientId })
   }
 
   private async enqueuePromptAudioFromVoiceTurn(clientId: string, interactionId: string, payload: Record<string, unknown>): Promise<boolean> {

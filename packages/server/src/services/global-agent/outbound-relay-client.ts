@@ -492,6 +492,11 @@ class McuSocketIoRelayClient {
       this.emitLocalMcuEvent('voice.stream.end', event)
       return
     }
+    if (event.type === 'voice.stream.abort') {
+      this.pendingVoiceStream = null
+      this.emitLocalMcuEvent('voice.stream.abort', event)
+      return
+    }
     if (event.type === 'audio.done' || event.type === 'audio.interrupted' || event.type === 'audio.dropped') {
       this.emitLocalMcuEvent(event.type, event)
       if (event.type === 'audio.interrupted' && typeof event.interactionId === 'string') {
