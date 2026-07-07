@@ -7,6 +7,7 @@ import { clearSessionMessages } from '../../db/hermes/session-store'
 import { getChatRunServer } from '../../routes/hermes/chat-run'
 import { logger } from '../logger'
 import { transcodeToPcmS16le } from '../hermes/stt-providers/audio-convert'
+import { encodeMcuImaAdpcm } from '../hermes/mcu-adpcm'
 import { MCU_TTS_SAMPLE_RATE, mcuPromptText, mcuPromptUrl } from '../hermes/mcu-prompts'
 import { createMcuSpeechSegmenter, normalizeMcuSpeechText } from './mcu-speech-segmenter'
 
@@ -1070,7 +1071,7 @@ class McuSocketIoRelayClient {
         segmentId,
         text: '',
         url: audio.url,
-        mimeType: 'audio/x-pcm',
+        mimeType: audio.mimeType,
         channels: 1,
         sampleRate: MCU_TTS_SAMPLE_RATE,
         durationMs: Math.max(1200, Math.min(text.length * 180, 12_000)),
@@ -1095,7 +1096,7 @@ class McuSocketIoRelayClient {
     })
   }
 
-  private async synthesizeMcuSpeech(text: string, profile: string, signal?: AbortSignal): Promise<{ url: string }> {
+  private async synthesizeMcuSpeech(text: string, profile: string, signal?: AbortSignal): Promise<{ url: string; mimeType: string }> {
     if (!this.options.userToken) {
       throw new Error('missing Web UI auth token')
     }
@@ -1123,7 +1124,11 @@ class McuSocketIoRelayClient {
         throw new Error(`${context} returned empty audio`)
       }
       const contentType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase()
-      if (contentType === 'audio/x-pcm' || contentType === 'audio/pcm') return audio
+      const sourceBytes = audio.length
+      if (contentType === 'audio/x-pcm' || contentType === 'audio/pcm') {
+        logger.info({ context, contentType, sourceBytes, pcmBytes: audio.length }, '[outbound-relay-client] MCU TTS PCM audio ready')
+        return audio
+      }
 
       const converted = await transcodeToPcmS16le(audio, contentType || 'application/octet-stream', {
         sampleRate: MCU_TTS_SAMPLE_RATE,
@@ -1135,6 +1140,13 @@ class McuSocketIoRelayClient {
       if (!audio.length) {
         throw new Error(`${context} PCM conversion returned empty audio`)
       }
+      logger.info({
+        context,
+        contentType: contentType || 'application/octet-stream',
+        sourceBytes,
+        pcmBytes: audio.length,
+        sampleRate: MCU_TTS_SAMPLE_RATE,
+      }, '[outbound-relay-client] MCU TTS decoded to PCM')
       return audio
     }
 
@@ -1156,42 +1168,37 @@ class McuSocketIoRelayClient {
     try {
       audio = await readPcmAudio(response, 'MCU TTS')
     } catch (err) {
-      logger.warn({ err }, '[outbound-relay-client] MCU TTS audio conversion failed, falling back to Edge TTS')
-      try {
-        const fallback = await this.options.fetchImpl(`${baseUrl}/api/hermes/tts/synthesize`, {
-          method: 'POST',
-          headers,
-          signal,
-          body: JSON.stringify({
-            provider: 'edge',
-            text,
-            options: MCU_TTS_OPTIONS,
-          }),
-        })
-        if (!fallback.ok) {
-          const detail = await fallback.text().catch(() => '')
-          throw new Error(`MCU TTS conversion failed and Edge fallback failed: ${fallback.status}${detail ? ` ${detail.slice(0, 200)}` : ''}`)
-        }
-        audio = await readPcmAudio(fallback, 'MCU Edge TTS fallback')
-      } catch (fallbackError) {
-        throw fallbackError
+      logger.warn({ err }, '[outbound-relay-client] MCU TTS audio decode failed, falling back to Edge TTS')
+      const fallback = await requestTts('edge')
+      if (!fallback.ok) {
+        const detail = await fallback.text().catch(() => '')
+        throw new Error(`MCU TTS decode failed and Edge fallback failed: ${fallback.status}${detail ? ` ${detail.slice(0, 200)}` : ''}`)
       }
+      audio = await readPcmAudio(fallback, 'MCU Edge TTS fallback')
     }
 
     const dir = join(config.appHome, 'mcu-audio')
     await mkdir(dir, { recursive: true })
-    const file = `${randomUUID()}.pcm`
-    await writeFile(join(dir, file), audio)
+    const file = `${randomUUID()}.adpcm`
+    const encoded = encodeMcuImaAdpcm(audio, MCU_TTS_SAMPLE_RATE)
+    await writeFile(join(dir, file), encoded)
+    logger.info({
+      file,
+      textChars: text.length,
+      pcmBytes: audio.length,
+      adpcmBytes: encoded.length,
+      ratio: audio.length > 0 ? Number((encoded.length / audio.length).toFixed(3)) : 0,
+    }, '[outbound-relay-client] MCU TTS encoded to ADPCM')
     const localUrl = `${baseUrl}/api/hermes/mcu/audio/${file}`
-    const remoteUrl = await this.uploadMcuAudioToRelay(audio, signal).catch((err) => {
+    const remoteUrl = await this.uploadMcuAudioToRelay(encoded, 'audio/x-ima-adpcm', signal).catch((err) => {
       logger.warn({
         err,
         relayUrl: this.redactedRelayUrl(),
-        bytes: audio.length,
+        bytes: encoded.length,
       }, '[outbound-relay:ws] failed to upload MCU audio to relay')
       return ''
     })
-    return { url: remoteUrl || localUrl }
+    return { url: remoteUrl || localUrl, mimeType: 'audio/x-ima-adpcm' }
   }
 
   private relayHttpBaseUrl(): string {
@@ -1211,14 +1218,14 @@ class McuSocketIoRelayClient {
     return `${baseUrl}${path}`
   }
 
-  private async uploadMcuAudioToRelay(audio: Buffer, signal?: AbortSignal): Promise<string> {
+  private async uploadMcuAudioToRelay(audio: Buffer, mimeType = 'audio/x-pcm', signal?: AbortSignal): Promise<string> {
     if (!this.audioUploadToken || !this.options.deviceCode) return ''
     const uploadUrl = this.resolveRelayAudioUploadUrl()
     const response = await this.options.fetchImpl(uploadUrl, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.audioUploadToken}`,
-        'Content-Type': 'audio/x-pcm',
+        'Content-Type': mimeType,
         'X-Device-Code': this.options.deviceCode,
         'X-Audio-Sample-Rate': String(MCU_TTS_SAMPLE_RATE),
         'X-Audio-Channels': '1',
@@ -1263,7 +1270,8 @@ class McuSocketIoRelayClient {
     }
     const audio = Buffer.from(await response.arrayBuffer())
     if (!audio.length) throw new Error('local MCU audio fetch returned empty audio')
-    return await this.uploadMcuAudioToRelay(audio, undefined)
+    const mimeType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase() || 'audio/x-pcm'
+    return await this.uploadMcuAudioToRelay(audio, mimeType, undefined)
   }
 
   private redactedRelayUrl(): string {

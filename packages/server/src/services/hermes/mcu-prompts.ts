@@ -44,7 +44,7 @@ export function mcuPromptUrl(id: McuPromptId): string {
 }
 
 export function isValidMcuAudioFileName(file: string): boolean {
-  return /^[a-f0-9-]+\.pcm$/i.test(file) || Object.values(MCU_PROMPTS).some(prompt => prompt.fileName === file)
+  return /^[a-f0-9-]+\.(?:pcm|adpcm)$/i.test(file) || Object.values(MCU_PROMPTS).some(prompt => prompt.fileName === file)
 }
 
 async function existingFile(path: string): Promise<string | null> {

@@ -9,6 +9,7 @@ import { userCanAccessProfile } from '../../db/hermes/users-store'
 import { config } from '../../config'
 import { getChatRunServer } from '../../routes/hermes/chat-run'
 import { transcodeToPcmS16le } from '../hermes/stt-providers/audio-convert'
+import { encodeMcuImaAdpcm } from '../hermes/mcu-adpcm'
 import { MCU_TTS_SAMPLE_RATE, mcuPromptText, mcuPromptUrl } from '../hermes/mcu-prompts'
 import { createMcuSpeechSegmenter, normalizeMcuSpeechText } from './mcu-speech-segmenter'
 import type {
@@ -1111,7 +1112,7 @@ export class GlobalAgentServer {
     return `mcu-${instance}-${profileId}`
   }
 
-  private async synthesizeMcuSpeech(text: string, userToken: string, profile: string, signal?: AbortSignal): Promise<{ url: string }> {
+  private async synthesizeMcuSpeech(text: string, userToken: string, profile: string, signal?: AbortSignal): Promise<{ url: string; mimeType: string }> {
     const headers = {
       Authorization: `Bearer ${userToken}`,
       'Content-Type': 'application/json',
@@ -1132,7 +1133,11 @@ export class GlobalAgentServer {
       let audio: Buffer<ArrayBufferLike> = Buffer.from(await response.arrayBuffer())
       if (!audio.length) throw new Error(`${context} returned empty audio`)
       const contentType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase()
-      if (contentType === 'audio/x-pcm' || contentType === 'audio/pcm') return audio
+      const sourceBytes = audio.length
+      if (contentType === 'audio/x-pcm' || contentType === 'audio/pcm') {
+        logger.info({ context, contentType, sourceBytes, pcmBytes: audio.length }, '[global-agent] MCU TTS PCM audio ready')
+        return audio
+      }
 
       const converted = await transcodeToPcmS16le(audio, contentType || 'application/octet-stream', {
         sampleRate: MCU_TTS_SAMPLE_RATE,
@@ -1142,6 +1147,13 @@ export class GlobalAgentServer {
       }
       audio = converted.audio
       if (!audio.length) throw new Error(`${context} PCM conversion returned empty audio`)
+      logger.info({
+        context,
+        contentType: contentType || 'application/octet-stream',
+        sourceBytes,
+        pcmBytes: audio.length,
+        sampleRate: MCU_TTS_SAMPLE_RATE,
+      }, '[global-agent] MCU TTS decoded to PCM')
       return audio
     }
 
@@ -1163,33 +1175,28 @@ export class GlobalAgentServer {
     try {
       audio = await readPcmAudio(response, 'MCU TTS')
     } catch (err) {
-      logger.warn({ err }, '[global-agent] MCU TTS audio conversion failed, falling back to Edge TTS')
-      try {
-        const fallback = await this.fetchImpl(`${this.localBaseUrl}/api/hermes/tts/synthesize`, {
-          method: 'POST',
-          headers,
-          signal,
-          body: JSON.stringify({
-            provider: 'edge',
-            text,
-            options: MCU_TTS_OPTIONS,
-          }),
-        })
-        if (!fallback.ok) {
-          const detail = await fallback.text().catch(() => '')
-          throw new Error(`MCU TTS conversion failed and Edge fallback failed: ${fallback.status}${detail ? ` ${detail.slice(0, 200)}` : ''}`)
-        }
-        audio = await readPcmAudio(fallback, 'MCU Edge TTS fallback')
-      } catch (fallbackError) {
-        throw fallbackError
+      logger.warn({ err }, '[global-agent] MCU TTS audio decode failed, falling back to Edge TTS')
+      const fallback = await requestTts('edge')
+      if (!fallback.ok) {
+        const detail = await fallback.text().catch(() => '')
+        throw new Error(`MCU TTS decode failed and Edge fallback failed: ${fallback.status}${detail ? ` ${detail.slice(0, 200)}` : ''}`)
       }
+      audio = await readPcmAudio(fallback, 'MCU Edge TTS fallback')
     }
 
     const dir = join(config.appHome, 'mcu-audio')
     await mkdir(dir, { recursive: true })
-    const file = `${randomUUID()}.pcm`
-    await writeFile(join(dir, file), audio)
-    return { url: `/api/hermes/mcu/audio/${file}` }
+    const file = `${randomUUID()}.adpcm`
+    const encoded = encodeMcuImaAdpcm(audio, MCU_TTS_SAMPLE_RATE)
+    await writeFile(join(dir, file), encoded)
+    logger.info({
+      file,
+      textChars: text.length,
+      pcmBytes: audio.length,
+      adpcmBytes: encoded.length,
+      ratio: audio.length > 0 ? Number((encoded.length / audio.length).toFixed(3)) : 0,
+    }, '[global-agent] MCU TTS encoded to ADPCM')
+    return { url: `/api/hermes/mcu/audio/${file}`, mimeType: 'audio/x-ima-adpcm' }
   }
 
   private async enqueueMcuSpeechSegment(options: McuVoiceChatTurnOptions, segmentId: string, text: string): Promise<void> {
@@ -1206,7 +1213,7 @@ export class GlobalAgentServer {
         segmentId,
         text: '',
         url: audio.url,
-        mimeType: 'audio/x-pcm',
+        mimeType: audio.mimeType,
         channels: 1,
         sampleRate: MCU_TTS_SAMPLE_RATE,
         durationMs: Math.max(1200, Math.min(text.length * 180, 12_000)),
