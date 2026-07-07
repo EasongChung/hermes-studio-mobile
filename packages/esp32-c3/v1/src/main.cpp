@@ -85,6 +85,8 @@ constexpr int kVoiceInputGainPermille = 2800;
 constexpr int kAudioSampleRate = 24000;
 constexpr int kVoiceInputSampleRate = 16000;
 constexpr int kMcuAudioDefaultSampleRate = 24000;
+constexpr size_t kVoiceStreamChunkFrames = 1024;
+constexpr uint8_t kVoiceStreamQueueSlots = 8;
 constexpr size_t kVoiceRecordMaxFrames = (kVoiceInputSampleRate * kVoiceRecordMs) / 1000UL;
 constexpr size_t kVoiceRecordBufferBytes = 44 + kVoiceRecordMaxFrames * sizeof(int16_t);
 constexpr uint8_t kDefaultOutputVolumePercent = 70;
@@ -185,6 +187,21 @@ struct McuAudioSegment {
   uint32_t sampleRate = kMcuAudioDefaultSampleRate;
   uint32_t durationMs = 0;
   bool completionManagedByServer = false;
+};
+
+struct VoiceStreamChunk {
+  bool done = false;
+  uint32_t offset = 0;
+  size_t bytes = 0;
+  int16_t samples[kVoiceStreamChunkFrames] = {};
+};
+
+struct VoiceStreamSenderContext {
+  const String *interactionId = nullptr;
+  QueueHandle_t queue = nullptr;
+  volatile bool done = false;
+  volatile bool failed = false;
+  uint32_t sentBytes = 0;
 };
 
 McuAudioSegment mcuAudioQueue[kMaxMcuAudioQueue];
@@ -3802,6 +3819,25 @@ bool broadcastMcuVoiceStreamChunk(const String &interactionId, const uint8_t *da
   return sent;
 }
 
+void voiceStreamSenderTask(void *param) {
+  VoiceStreamSenderContext *ctx = static_cast<VoiceStreamSenderContext *>(param);
+  VoiceStreamChunk chunk;
+  while (ctx && ctx->queue && xQueueReceive(ctx->queue, &chunk, portMAX_DELAY) == pdTRUE) {
+    if (chunk.done) break;
+    if (!ctx->interactionId ||
+        !broadcastMcuVoiceStreamChunk(*ctx->interactionId,
+                                      reinterpret_cast<const uint8_t *>(chunk.samples),
+                                      chunk.bytes,
+                                      chunk.offset)) {
+      ctx->failed = true;
+      break;
+    }
+    ctx->sentBytes += static_cast<uint32_t>(chunk.bytes);
+  }
+  if (ctx) ctx->done = true;
+  vTaskDelete(nullptr);
+}
+
 bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   if (audioBusy) {
     lastAudioDetail = F("audio busy before record");
@@ -3826,9 +3862,8 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   setOledStatus(OledMode::Think, F("LISTEN"), F("SAY NOW"), 0);
 
   constexpr size_t kReadBytes = 512;
-  constexpr size_t kPcmChunkFrames = 1024;
   uint8_t readBuffer[kReadBytes];
-  int16_t pcmChunk[kPcmChunkFrames];
+  VoiceStreamChunk pcmChunk;
   size_t pcmChunkFrames = 0;
   uint32_t framesDone = 0;
   uint32_t emptyReads = 0;
@@ -3837,8 +3872,26 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   uint16_t monoPeak = 0;
   uint64_t monoSquares = 0;
   uint32_t activeSamples = 0;
-  uint32_t sentBytes = 0;
+  uint32_t queuedBytes = 0;
   const char *stopReason = "max";
+  QueueHandle_t streamQueue = xQueueCreate(kVoiceStreamQueueSlots, sizeof(VoiceStreamChunk));
+  if (!streamQueue) {
+    audioBusy = false;
+    lastAudioDetail = F("voice stream queue alloc failed");
+    setOledStatus(OledMode::Error, F("VOICE"), F("QUEUE"), 0);
+    return false;
+  }
+  VoiceStreamSenderContext senderContext;
+  senderContext.interactionId = &interactionId;
+  senderContext.queue = streamQueue;
+  TaskHandle_t senderTask = nullptr;
+  if (xTaskCreate(voiceStreamSenderTask, "voice-send", 8192, &senderContext, 1, &senderTask) != pdPASS) {
+    vQueueDelete(streamQueue);
+    audioBusy = false;
+    lastAudioDetail = F("voice stream sender start failed");
+    setOledStatus(OledMode::Error, F("VOICE"), F("SEND"), 0);
+    return false;
+  }
   voiceRecordHeardSpeech = false;
   voiceRecordRms = 0;
   voiceRecordPeak = 0;
@@ -3849,14 +3902,34 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   uint32_t lastRecordOledAtMs = startedAt;
   uint8_t lastRecordProgress = 0;
 
-  auto flushPcmChunk = [&]() -> bool {
+  auto stopSender = [&]() -> bool {
+    VoiceStreamChunk doneChunk;
+    doneChunk.done = true;
+    xQueueSend(streamQueue, &doneChunk, pdMS_TO_TICKS(1000));
+    uint32_t waitStartedAt = millis();
+    while (!senderContext.done && millis() - waitStartedAt < 10000) {
+      delay(10);
+      yield();
+    }
+    if (!senderContext.done && senderTask) {
+      vTaskDelete(senderTask);
+      senderContext.done = true;
+      senderContext.failed = true;
+    }
+    vQueueDelete(streamQueue);
+    return !senderContext.failed;
+  };
+
+  auto queuePcmChunk = [&]() -> bool {
     if (pcmChunkFrames == 0) return true;
     size_t bytes = pcmChunkFrames * sizeof(int16_t);
-    uint32_t offset = sentBytes;
-    if (!broadcastMcuVoiceStreamChunk(interactionId, reinterpret_cast<const uint8_t *>(pcmChunk), bytes, offset)) {
+    pcmChunk.done = false;
+    pcmChunk.offset = queuedBytes;
+    pcmChunk.bytes = bytes;
+    if (senderContext.failed || xQueueSend(streamQueue, &pcmChunk, 0) != pdTRUE) {
       return false;
     }
-    sentBytes += static_cast<uint32_t>(bytes);
+    queuedBytes += static_cast<uint32_t>(bytes);
     pcmChunkFrames = 0;
     return true;
   };
@@ -3886,6 +3959,7 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
       audioBusy = false;
       lastAudioDetail = String(F("I2S stream read failed err=")) + String(static_cast<int>(err));
       setOledStatus(OledMode::Error, F("I2S"), F("READ FAIL"), 0);
+      stopSender();
       return false;
     }
     if (bytesRead == 0) {
@@ -3910,12 +3984,13 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
       if (monoMag > monoPeak) monoPeak = monoMag;
       monoSquares += static_cast<uint64_t>(monoMag) * static_cast<uint64_t>(monoMag);
       if (monoMag >= kVoiceVadActiveThreshold) ++activeSamples;
-      pcmChunk[pcmChunkFrames++] = mono;
+      pcmChunk.samples[pcmChunkFrames++] = mono;
       ++framesDone;
 
-      if (pcmChunkFrames >= kPcmChunkFrames && !flushPcmChunk()) {
+      if (pcmChunkFrames >= kVoiceStreamChunkFrames && !queuePcmChunk()) {
         audioBusy = false;
-        lastAudioDetail = F("voice stream chunk send failed");
+        lastAudioDetail = senderContext.failed ? F("voice stream chunk send failed") : F("voice stream queue full");
+        stopSender();
         return false;
       }
     }
@@ -3930,14 +4005,21 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
     yield();
   }
 
-  if (!flushPcmChunk()) {
+  if (!queuePcmChunk()) {
     audioBusy = false;
-    lastAudioDetail = F("voice stream final send failed");
+    lastAudioDetail = senderContext.failed ? F("voice stream final send failed") : F("voice stream final queue failed");
+    stopSender();
+    return false;
+  }
+
+  if (!stopSender()) {
+    audioBusy = false;
+    lastAudioDetail = F("voice stream sender failed");
     return false;
   }
 
   audioBusy = false;
-  if (sentBytes == 0) {
+  if (senderContext.sentBytes == 0) {
     lastAudioDetail = String(F("voice stream empty, i2s empty reads=")) + String(emptyReads);
     setOledStatus(OledMode::Error, F("MIC"), F("NO DATA"), 0);
     return false;
@@ -3949,16 +4031,16 @@ bool recordAndBroadcastMcuVoiceStream(const String &interactionId) {
   voiceRecordHeardSpeech = voiceRecordRms >= kVoiceVadRmsStart &&
                             voiceRecordPeak >= kVoiceVadPeakStart &&
                             voiceRecordActiveSamples >= kVoiceVadMinActiveSamples;
-  lastAudioDetail = String(F("voice pcm bytes=")) + String(sentBytes) +
+  lastAudioDetail = String(F("voice pcm bytes=")) + String(senderContext.sentBytes) +
                     F(", frames=") + String(framesDone) +
                     F(", rms=") + String(voiceRecordRms) +
                     F(", peak=") + String(voiceRecordPeak) +
                     F(", active=") + String(voiceRecordActiveSamples);
   Serial.printf("Voice stream frames=%lu bytes=%lu stop=%s peak L/R/M=%u/%u/%u rms=%lu active=%lu vad=%s\n",
-                static_cast<unsigned long>(framesDone), static_cast<unsigned long>(sentBytes), stopReason,
+                static_cast<unsigned long>(framesDone), static_cast<unsigned long>(senderContext.sentBytes), stopReason,
                 leftPeak, rightPeak, monoPeak, static_cast<unsigned long>(voiceRecordRms),
                 static_cast<unsigned long>(voiceRecordActiveSamples), voiceRecordHeardSpeech ? "true" : "false");
-  broadcastMcuVoiceStreamEnd(interactionId, sentBytes);
+  broadcastMcuVoiceStreamEnd(interactionId, senderContext.sentBytes);
   return true;
 }
 
