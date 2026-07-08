@@ -558,6 +558,15 @@ function compareSnapshots(before: SnapshotFile | undefined, after: SnapshotFile,
   }
 }
 
+function isEmptyContentOnlyChange(comparison: SnapshotComparison): boolean {
+  return comparison.changed &&
+    comparison.additions === 0 &&
+    comparison.deletions === 0 &&
+    !comparison.patch &&
+    (comparison.sizeBefore == null || comparison.sizeBefore === 0) &&
+    (comparison.sizeAfter == null || comparison.sizeAfter === 0)
+}
+
 export function startWorkspaceRunCheckpoint(args: {
   sessionId: string
   runId?: string | null
@@ -649,6 +658,7 @@ export function completeWorkspaceRunCheckpoint(args: {
       Math.max(0, MAX_TOTAL_PATCH_BYTES - totalPatchBytes),
     )
     if (!comparison.changed) continue
+    if (isEmptyContentOnlyChange(comparison)) continue
     totalPatchBytes += comparison.patchBytes
     totalAdditions += comparison.additions
     totalDeletions += comparison.deletions

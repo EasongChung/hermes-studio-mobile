@@ -161,6 +161,47 @@ describe('workspace diff tracker', () => {
     expect(detail?.patch).toContain('+new')
   })
 
+  it('skips empty zero-byte file changes in non-git workspaces', async () => {
+    const {
+      completeWorkspaceRunCheckpoint,
+      startWorkspaceRunCheckpoint,
+    } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+
+    const workspace = join(root, 'plain-empty-file')
+    mkdirSync(workspace)
+
+    startWorkspaceRunCheckpoint({
+      sessionId: 'session-empty',
+      runId: 'run-empty',
+      workspace,
+    })
+
+    writeFileSync(join(workspace, 'empty.txt'), '')
+    const emptyOnlyChange = completeWorkspaceRunCheckpoint({
+      sessionId: 'session-empty',
+      runId: 'run-empty',
+      workspace,
+    })
+
+    expect(emptyOnlyChange).toBeNull()
+
+    startWorkspaceRunCheckpoint({
+      sessionId: 'session-empty',
+      runId: 'run-non-empty',
+      workspace,
+    })
+
+    writeFileSync(join(workspace, 'non-empty.txt'), 'content\n')
+    const nonEmptyChange = completeWorkspaceRunCheckpoint({
+      sessionId: 'session-empty',
+      runId: 'run-non-empty',
+      workspace,
+    })
+
+    expect(nonEmptyChange).not.toBeNull()
+    expect(nonEmptyChange?.files.map(file => file.path)).toEqual(['non-empty.txt'])
+  })
+
   it('skips common language dependency and build directories in non-git workspaces', async () => {
     const {
       completeWorkspaceRunCheckpoint,
