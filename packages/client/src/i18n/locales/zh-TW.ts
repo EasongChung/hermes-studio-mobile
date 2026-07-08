@@ -2375,6 +2375,13 @@ export default {
 
   // 更新日誌
   changelog: {
+    new_0_6_27_1: '本版本彙總 0.6.26 之後合併的 PR：桌面端啟動兜底、Windows runtime、遠端 MCU、群聊工作區、預設工作區收藏與空 diff 過濾都已納入',
+    new_0_6_27_2: '桌面端啟動更穩：當 active Web UI 目錄缺失或損壞時，會清理失效 Web UI 指標並回退到內建 Web UI，同時保留 runtime pin',
+    new_0_6_27_3: 'Windows 桌面 runtime 改用可遷移的 hermes.cmd wrapper，避免舊 .exe trampoline 在 Web UI server 呼叫時失效',
+    new_0_6_27_4: '遠端 MCU 改走 Socket.IO /global-agent relay，ESP32-C3 登入、發現、遠端機器識別、語音播放佇列和 Wi-Fi 憑據保存更穩定，韌體也已更新',
+    new_0_6_27_5: '群聊支援建立和設定房間工作區，服務端校驗 workspace，群聊 agent run 會繼承該工作區；唯讀成員會隱藏 workspace、inviteCode 和管理入口',
+    new_0_6_27_6: '預設工作區收藏星標移到資料夾選擇器的已選路徑列右側，並補齊各語言文案，工作區選擇介面更自然',
+    new_0_6_27_7: '工作區 diff 會跳過前後都是 0 位元組且沒有 patch 或行變化的空檔案變更，避免出現 +0/-0 的無意義 diff 卡片',
     new_0_6_26_1: '本版本彙總 0.6.25 之後合併的 PR，重點涵蓋 Ekko Agent、Coding Agent 上下文顯示、Journey、群聊基線、桌面端修復與 MCP 回傳量收斂',
     new_0_6_26_2: 'Ekko Agent 接入聊天鏈路，補齊 runtime context、瀏覽器工具、更穩定的工具事件，並恢復 tool result 歷史用於上下文用量統計',
     new_0_6_26_3: 'Coding Agent 會話現在更清楚顯示 reasoning 與 context 設定，持久化 API mode，避免 Codex 誤用 app-server API mode，並修復繼續對話後上下文用量跳動',

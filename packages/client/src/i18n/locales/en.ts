@@ -2371,6 +2371,13 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_6_27_1: 'This release covers every PR merged after 0.6.26, including desktop startup fallback, Windows runtime fixes, remote MCU relay, group chat workspaces, default workspace polish, and empty diff filtering',
+    new_0_6_27_2: 'Desktop startup now falls back to the bundled Web UI when the active Web UI directory is missing or incomplete, while preserving the pinned runtime',
+    new_0_6_27_3: 'Windows desktop runtimes now use relocatable hermes.cmd wrappers instead of fragile .exe trampolines for Web UI server invocations',
+    new_0_6_27_4: 'Remote MCU traffic now uses the Socket.IO /global-agent relay, with steadier ESP32-C3 login, discovery, voice playback queueing, Wi-Fi credential persistence, and updated firmware',
+    new_0_6_27_5: 'Group Chat rooms can now own a validated workspace that is passed into group-agent runs, with read-only members seeing workspace, invite code, and management controls redacted',
+    new_0_6_27_6: 'Default workspace favorites now sit inside the folder picker selected-path row, with completed locale coverage for the workspace picker labels',
+    new_0_6_27_7: 'Workspace diff cards now skip zero-byte changes with no patch or line delta, avoiding meaningless +0/-0 changed-file cards',
     new_0_6_26_1: 'This release covers the PRs merged after 0.6.25, focusing on Ekko Agent, Coding Agent context display, Journey, group chat baselines, desktop fixes, and MCP payload size',
     new_0_6_26_2: 'Ekko Agent is now available in chat with runtime context handling, browser tools, steadier tool events, and restored tool-result history for context usage accounting',
     new_0_6_26_3: 'Coding Agent sessions now show reasoning and context settings more clearly, persist API mode, avoid Codex app-server mode misuse, and keep context usage from jumping after follow-up turns',
