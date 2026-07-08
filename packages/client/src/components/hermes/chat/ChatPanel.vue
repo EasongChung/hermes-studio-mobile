@@ -378,7 +378,7 @@ function handleTogglePinRecent(path: string) {
 }
 
 const isCurrentWorkspaceDefault = computed(() => {
-  return newChatWorkspace.value && defaultWorkspaces.value.includes(newChatWorkspace.value);
+  return Boolean(newChatWorkspace.value && defaultWorkspaces.value.includes(newChatWorkspace.value));
 });
 
 const showDefaultWorkspaceMenu = ref(false);
@@ -1732,22 +1732,14 @@ async function handleSessionModelCustomSubmit() {
                 </div>
               </div>
             </div>
-            <div class="workspace-input-row">
-              <FolderPicker v-model="newChatWorkspace" />
-              <NButton
-                size="small"
-                quaternary
-                @click="handleToggleDefaultWorkspace"
-                :disabled="!newChatWorkspace"
-                :title="isCurrentWorkspaceDefault ? t('chat.workspaceUnpin') : t('chat.workspacePin')"
-              >
-                <template #icon>
-                  <span :class="['workspace-star', { 'is-pinned': isCurrentWorkspaceDefault }]">
-                    {{ isCurrentWorkspaceDefault ? '★' : '☆' }}
-                  </span>
-                </template>
-              </NButton>
-            </div>
+            <FolderPicker
+              v-model="newChatWorkspace"
+              show-favorite
+              :favorite="isCurrentWorkspaceDefault"
+              :favorite-disabled="!newChatWorkspace"
+              :favorite-title="isCurrentWorkspaceDefault ? t('chat.workspaceUnpin') : t('chat.workspacePin')"
+              @toggle-favorite="handleToggleDefaultWorkspace"
+            />
             <div v-if="recentWorkspaces.length > 0" class="recent-workspaces">
               <span class="recent-workspaces-label">{{ t("chat.workspaceRecent") }}:</span>
               <div class="recent-workspaces-chips">
@@ -2845,33 +2837,6 @@ async function handleSessionModelCustomSubmit() {
 }
 
 /* ── Default Workspace Feature ─────────────────────────────────── */
-
-.workspace-input-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-}
-
-.workspace-input-row > :first-child {
-  flex: 1;
-  min-width: 0;
-}
-
-.workspace-star {
-  font-size: 16px;
-  line-height: 1;
-  color: $text-muted;
-  transition: color $transition-fast, transform $transition-fast;
-  cursor: pointer;
-
-  &:hover {
-    transform: scale(1.2);
-  }
-
-  &.is-pinned {
-    color: #f5a623;
-  }
-}
 
 .default-workspace-chips {
   display: flex;

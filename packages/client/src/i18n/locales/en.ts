@@ -619,6 +619,7 @@ export default {
     workspaceUnpin: 'Unset default workspace',
     workspaceRecent: 'Recent',
     defaultWorkspace: 'Default Workspace',
+    more: 'More',
     setWorkspace: 'Set Workspace',
     setWorkspaceTitle: 'Set Session Workspace',
     workspacePlaceholder: 'Enter project path, e.g. /home/user/project',
