@@ -7,7 +7,7 @@ export interface WorkflowSelectOption extends SelectOption {
   value: string
 }
 
-export type WorkflowNodeStatus = 'idle' | 'queued' | 'running' | 'pending_approval' | 'completed' | 'failed' | 'canceled'
+export type WorkflowNodeStatus = 'idle' | 'queued' | 'running' | 'pending_approval' | 'completed' | 'failed' | 'approval_rejected' | 'canceled'
 
 export interface WorkflowAgentNodeData {
   title: string

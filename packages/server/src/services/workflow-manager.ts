@@ -37,7 +37,7 @@ import { logger } from './logger'
 
 export type { WorkflowCreateInput, WorkflowRecord, WorkflowUpdateInput }
 
-export type WorkflowRuntimeState = 'idle' | 'queued' | 'running' | 'pending_approval' | 'completed' | 'failed' | 'canceled'
+export type WorkflowRuntimeState = 'idle' | 'queued' | 'running' | 'pending_approval' | 'completed' | 'failed' | 'approval_rejected' | 'canceled'
 export type WorkflowRunType = 'workflow'
 export type WorkflowNodeAgent = 'hermes' | 'claude-code' | 'codex'
 
@@ -324,7 +324,6 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     if (!run || run.workflow_id !== workflowId) return false
     const pending = this.pendingNodeApprovals.get(this.nodeApprovalKey(runId, nodeId))
     if (!pending || pending.workflowId !== workflowId || pending.nodeId !== nodeId) return false
-    if (!approved) this.canceledRunIds.add(runId)
     this.pendingNodeApprovals.delete(this.nodeApprovalKey(runId, nodeId))
     pending.resolve(approved)
     return true
@@ -643,15 +642,15 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
           })
           if (!approved) {
             const error = 'Workflow node approval rejected'
-            updateWorkflowRunNodeSession(nodeSession.id, { status: 'canceled', finished_at: Date.now(), error })
-            nodeStatuses[node.id] = 'canceled'
+            updateWorkflowRunNodeSession(nodeSession.id, { status: 'approval_rejected', finished_at: Date.now(), error })
+            nodeStatuses[node.id] = 'approval_rejected'
             this.setRuntimeStatus(workflow.id, {
-              status: 'canceled',
+              status: 'running',
               runId: run.id,
               error,
               nodeStatuses: { ...nodeStatuses },
             })
-            return { node, ok: false, canceled: true, error }
+            return { node, ok: false, approvalRejected: true, error }
           }
           outputs.set(node.id, output)
           completed.add(node.id)
@@ -673,6 +672,11 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
           if ('canceled' in failed && failed.canceled) {
             const canceledRun = failRun(failed.error || 'Workflow run canceled')
             return { run: canceledRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
+          }
+          if ('approvalRejected' in failed && failed.approvalRejected) {
+            const message = `Node ${failed.node.data.title || failed.node.id} approval rejected`
+            const failedRun = failRun(message)
+            return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
           }
           nodeStatuses[failed.node.id] = 'failed'
           const message = `Node ${failed.node.data.title || failed.node.id} failed: ${failed.error}`
@@ -783,6 +787,19 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     const activeIds = preserveStartNode
       ? reachableFrom(downstreamStartIds, outgoing)
       : reachableFrom([targetNodeId], outgoing)
+    let expandedActiveIds = true
+    while (expandedActiveIds) {
+      expandedActiveIds = false
+      for (const activeNodeId of [...activeIds]) {
+        for (const edge of incoming.get(activeNodeId) || []) {
+          if (activeIds.has(edge.source)) continue
+          const upstreamSession = existingSessionByNode.get(edge.source)
+          if (upstreamSession?.status === 'completed') continue
+          activeIds.add(edge.source)
+          expandedActiveIds = true
+        }
+      }
+    }
     if (activeIds.size === 0) {
       const err = new Error('workflow node has no downstream nodes to rerun')
       ;(err as any).status = 400
@@ -962,15 +979,15 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
           })
           if (!approved) {
             const error = 'Workflow node approval rejected'
-            updateWorkflowRunNodeSession(nodeSession.id, { status: 'canceled', finished_at: Date.now(), error })
-            nodeStatuses[node.id] = 'canceled'
+            updateWorkflowRunNodeSession(nodeSession.id, { status: 'approval_rejected', finished_at: Date.now(), error })
+            nodeStatuses[node.id] = 'approval_rejected'
             this.setRuntimeStatus(workflow.id, {
-              status: 'canceled',
+              status: 'running',
               runId: run.id,
               error,
               nodeStatuses: { ...nodeStatuses },
             })
-            return { node, ok: false, canceled: true, error }
+            return { node, ok: false, approvalRejected: true, error }
           }
           outputs.set(node.id, output)
           completed.add(node.id)
@@ -992,6 +1009,11 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
           if ('canceled' in failed && failed.canceled) {
             const canceledRun = failRun(failed.error || 'Workflow run canceled')
             return { run: canceledRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
+          }
+          if ('approvalRejected' in failed && failed.approvalRejected) {
+            const message = `Node ${failed.node.data.title || failed.node.id} approval rejected`
+            const failedRun = failRun(message)
+            return { run: failedRun, nodeSessions: listWorkflowRunNodeSessions(run.id) }
           }
           nodeStatuses[failed.node.id] = 'failed'
           const message = `Node ${failed.node.data.title || failed.node.id} failed: ${failed.error}`

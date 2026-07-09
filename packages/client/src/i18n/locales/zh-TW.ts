@@ -768,6 +768,7 @@ export default {
       pending_approval: '待審批',
       completed: '已完成',
       failed: '失敗',
+      approval_rejected: '審批拒絕',
       canceled: '已取消',
     },
     runs: {

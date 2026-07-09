@@ -168,10 +168,9 @@ describe('workflow controller', () => {
     expect(c.body).toEqual({ ok: true })
   })
 
-  it('stops a workflow run when a pending workflow node is rejected', async () => {
+  it('records a workflow node rejection without stopping the run immediately', async () => {
     managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
     managerMock.approveNode.mockReturnValue(true)
-    managerMock.stopRun.mockResolvedValue({ id: 'run-1', workflow_id: 'workflow-1', status: 'canceled' })
 
     const mod = await import('../../packages/server/src/controllers/hermes/workflows')
     const c = ctx({
@@ -182,7 +181,7 @@ describe('workflow controller', () => {
     await mod.approveNode(c)
 
     expect(managerMock.approveNode).toHaveBeenCalledWith('workflow-1', 'run-1', 'node-1', false)
-    expect(managerMock.stopRun).toHaveBeenCalledWith('workflow-1', 'run-1', 'Workflow node approval rejected')
+    expect(managerMock.stopRun).not.toHaveBeenCalled()
     expect(c.body).toEqual({ ok: true })
   })
 

@@ -768,6 +768,7 @@ export default {
       pending_approval: 'Pending approval',
       completed: 'Completed',
       failed: 'Failed',
+      approval_rejected: 'Approval rejected',
       canceled: 'Canceled',
     },
     runs: {

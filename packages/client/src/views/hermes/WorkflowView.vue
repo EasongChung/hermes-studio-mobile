@@ -167,6 +167,7 @@ let removeWorkflowStatusListener: (() => void) | null = null
 let mobileQuery: MediaQueryList | null = null
 let applyingWorkflow = false
 let workflowRunsLoadSeq = 0
+let workflowRunsLoadingSeq = 0
 
 const agentOptions = computed<WorkflowSelectOption[]>(() => [
   { label: 'Hermes', value: 'hermes' },
@@ -233,19 +234,25 @@ const contextMenuOptions = computed<DropdownOption[]>(() => {
     const run = selectedWorkflowRun.value
     const isBusy = Boolean(rerunningWorkflowNodeId.value) || isWorkflowLive(activeWorkflowId.value)
     const hasNodeSession = Boolean(run?.node_sessions?.some(session => session.node_id === target.id && session.session_id))
+    const hasRunnableNodeSession = Boolean(run?.node_sessions?.some(session => (
+      session.node_id === target.id &&
+      session.session_id &&
+      session.status !== 'queued'
+    )))
+    const canPreserveStartNode = Boolean(run && workflowNodeStatusFromRun(run, target.id) === 'completed')
     const hasDownstream = edges.value.some(edge => edge.source === target.id)
     const options: DropdownOption[] = []
     if (hasNodeSession) {
       options.push({
         key: 'rerun-downstream-keep-node',
         label: t('workflow.actions.rerunDownstreamKeepNode'),
-        disabled: isBusy || !hasDownstream,
+        disabled: isBusy || !hasDownstream || !canPreserveStartNode,
       })
     }
     options.push({
       key: 'rerun-from-node-clear',
       label: t('workflow.actions.rerunDownstreamClearNode'),
-      disabled: isBusy,
+      disabled: isBusy || !hasRunnableNodeSession,
     })
     return options
   }
@@ -731,6 +738,7 @@ function workflowNodeStatusFromRuntime(status?: WorkflowRuntimeStatus, nodeId?: 
     case 'pending_approval':
     case 'completed':
     case 'failed':
+    case 'approval_rejected':
     case 'canceled':
       return currentStatus
     default:
@@ -797,6 +805,7 @@ function workflowNodeStatusFromRun(run: WorkflowRunRecord, nodeId: string): Work
     case 'running':
     case 'completed':
     case 'failed':
+    case 'approval_rejected':
     case 'canceled':
       return nodeSession.status
     case 'blocked':
@@ -870,7 +879,10 @@ async function loadWorkflowRuns(
     return
   }
   const requestSeq = ++workflowRunsLoadSeq
-  if (!options.silent) workflowRunsLoading.value = true
+  if (!options.silent) {
+    workflowRunsLoadingSeq = requestSeq
+    workflowRunsLoading.value = true
+  }
   try {
     const runs = await listWorkflowRuns(workflowId, 100)
     if (requestSeq !== workflowRunsLoadSeq) return
@@ -890,7 +902,9 @@ async function loadWorkflowRuns(
   } catch (err) {
     console.error('Failed to load workflow runs:', err)
   } finally {
-    if (requestSeq === workflowRunsLoadSeq && !options.silent) workflowRunsLoading.value = false
+    if (!options.silent && workflowRunsLoadingSeq === requestSeq) {
+      workflowRunsLoading.value = false
+    }
   }
 }
 
@@ -1427,13 +1441,15 @@ async function rerunWorkflowFromNode(nodeId: string, preserveStartNode: boolean)
     await rerunWorkflowRunFromNode(workflowId, run.id, nodeId, {
       preserve_start_node: preserveStartNode,
     })
-    void loadWorkflowRuns(workflowId, run.id)
+    void loadWorkflowRuns(workflowId, run.id, {
+      silent: true,
+      applySelectedSnapshot: false,
+    })
     const now = Date.now()
     const nextStatuses: Record<string, WorkflowRuntimeState> = Object.fromEntries(
-      nodes.value.map(node => [node.id, workflowNodeStatusFromRun(run, node.id)]),
+      nodes.value.map(node => [node.id, node.data.status || 'idle']),
     )
-    const queuedNodeIds = downstreamWorkflowNodeIds(nodeId)
-    if (!preserveStartNode) queuedNodeIds.add(nodeId)
+    const queuedNodeIds = rerunWorkflowNodeIds(nodeId, preserveStartNode, run)
     for (const queuedNodeId of queuedNodeIds) nextStatuses[queuedNodeId] = 'queued'
     handleWorkflowRuntimeStatus({
       workflowId,
@@ -1467,6 +1483,23 @@ function downstreamWorkflowNodeIds(nodeId: string): Set<string> {
     for (const edge of edges.value.filter(edge => edge.source === next)) stack.push(edge.target)
   }
   return visited
+}
+
+function rerunWorkflowNodeIds(nodeId: string, preserveStartNode: boolean, run: WorkflowRunRecord): Set<string> {
+  const activeIds = preserveStartNode
+    ? downstreamWorkflowNodeIds(nodeId)
+    : new Set([nodeId, ...downstreamWorkflowNodeIds(nodeId)])
+  let expanded = true
+  while (expanded) {
+    expanded = false
+    for (const edge of edges.value) {
+      if (!activeIds.has(edge.target) || activeIds.has(edge.source)) continue
+      if (workflowNodeStatusFromRun(run, edge.source) === 'completed') continue
+      activeIds.add(edge.source)
+      expanded = true
+    }
+  }
+  return activeIds
 }
 
 function initialRunNodeStatuses(sourceNodes: WorkflowNode[], sourceEdges: WorkflowEdge[]): Record<string, WorkflowRuntimeState> {
@@ -1647,6 +1680,7 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
   if (node.data.status === 'pending_approval') return '#d97706'
   if (node.data.status === 'completed') return '#16a34a'
   if (node.data.status === 'failed') return '#dc2626'
+  if (node.data.status === 'approval_rejected') return '#b45309'
   if (node.data.status === 'canceled') return '#f97316'
   return '#9ca3af'
 }

@@ -673,6 +673,7 @@ export default {
       pending_approval: 'Ожидает одобрения',
       completed: 'Завершено',
       failed: 'Ошибка',
+      approval_rejected: 'Одобрение отклонено',
       canceled: 'Отменено',
     },
     runs: {

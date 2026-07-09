@@ -2030,6 +2030,7 @@ jobTriggered: 'Job declenche',
     },
     status: {
       pending_approval: 'En attente d\'approbation',
+      approval_rejected: 'Approbation refusee',
     },
   },
 

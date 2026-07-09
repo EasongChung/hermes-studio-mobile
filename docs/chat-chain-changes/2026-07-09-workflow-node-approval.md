@@ -11,6 +11,8 @@ without a node-level approval gate.
 
 Workflow manager still passes `approvalChoice: 'once'` to chat runs so existing
 tool-call approval behavior is unchanged. Node approval happens after a node chat
-run succeeds: the manager marks that node `pending_approval`, waits for the
-workflow node approval API response, then either releases downstream nodes or
-cancels the workflow run.
+run succeeds: the manager marks that node `pending_approval` and waits for the
+workflow node approval API response. Approval releases downstream nodes.
+Rejection marks only that node `approval_rejected`; other pending node approvals
+remain pending, and not-yet-executed downstream nodes are canceled only after the
+active approval batch has resolved.

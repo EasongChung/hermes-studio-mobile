@@ -2030,6 +2030,7 @@ jobTriggered: 'Job ausgelost',
     },
     status: {
       pending_approval: 'Wartet auf Freigabe',
+      approval_rejected: 'Freigabe abgelehnt',
     },
   },
 

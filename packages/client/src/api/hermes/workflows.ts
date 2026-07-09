@@ -42,7 +42,7 @@ export interface WorkflowBatchDeleteResult {
 }
 
 export type WorkflowRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'canceled'
-export type WorkflowRunNodeStatus = 'queued' | 'running' | 'completed' | 'failed' | 'blocked' | 'canceled'
+export type WorkflowRunNodeStatus = 'queued' | 'running' | 'completed' | 'failed' | 'blocked' | 'approval_rejected' | 'canceled'
 
 export interface WorkflowRunRecord {
   id: string

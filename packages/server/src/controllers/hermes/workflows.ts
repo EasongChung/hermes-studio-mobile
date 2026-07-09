@@ -250,9 +250,6 @@ export async function approveNode(ctx: Context) {
     ctx.body = { error: 'workflow node approval is not pending' }
     return
   }
-  if (!approvedValue) {
-    await manager.stopRun(id, runId, 'Workflow node approval rejected')
-  }
   ctx.body = { ok: true }
 }
 
@@ -296,11 +293,13 @@ export async function rerunFromNode(ctx: Context) {
   void manager.rerunFromNode(id, runId, nodeId, runInput).catch((err: any) => {
     const message = err?.message || 'failed to rerun workflow'
     logger.error(err, '[workflow] async rerun failed for workflow %s run %s node %s', id, runId, nodeId)
+    const currentStatus = manager.getRuntimeStatus(id)
     manager.setRuntimeStatus(id, {
       status: 'failed',
       runId,
       completedAt: Date.now(),
       error: message,
+      nodeStatuses: { ...currentStatus.nodeStatuses },
     })
   })
 

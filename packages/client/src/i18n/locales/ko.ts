@@ -2029,6 +2029,7 @@ export default {
     },
     status: {
       pending_approval: '승인 대기',
+      approval_rejected: '승인 거부',
     },
   },
 

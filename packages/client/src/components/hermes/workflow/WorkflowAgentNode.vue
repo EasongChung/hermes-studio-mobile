@@ -411,6 +411,10 @@ async function uploadImages(files: File[]) {
   box-shadow: 0 0 8px rgba(217, 119, 6, 0.55);
 }
 
+.status-approval_rejected .node-status-dot {
+  background: #b45309;
+}
+
 .status-completed .node-status-dot {
   background: #16a34a;
 }
