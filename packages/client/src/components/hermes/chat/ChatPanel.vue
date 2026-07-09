@@ -55,6 +55,8 @@ const chatDropCounter = ref(0);
 const isChatDropActive = ref(false);
 const showToolPanel = ref(false);
 const activeToolPanel = ref<"files" | "terminal">("files");
+const activeWorkspaceSessionId = computed(() => chatStore.activeSession?.workspace && !chatStore.activeSession.isLocalOnly ? chatStore.activeSession.id : null);
+const activeWorkspacePath = computed(() => chatStore.activeSession?.workspace && !chatStore.activeSession.isLocalOnly ? chatStore.activeSession.workspace : null);
 const TOOL_PANEL_MIN_WIDTH = 360;
 const TOOL_PANEL_DEFAULT_WIDTH = 560;
 const TOOL_PANEL_STORAGE_KEY = "hermes.chat.toolPanelWidth";
@@ -695,7 +697,6 @@ async function confirmNewChat() {
     apiKey: source === "coding_agent" && !isGlobalCodingAgent ? group?.api_key || newChatApiKey.value.trim() || undefined : undefined,
     apiMode: isNewChatExternalCodingAgent.value && !isGlobalCodingAgent ? newChatApiMode.value : undefined,
   });
-  
   // Record workspace to recent list
   if (newChatWorkspace.value && workspaceComposable) {
     workspaceComposable.recordWorkspaceUsage(newChatWorkspace.value);
@@ -1973,7 +1974,11 @@ async function handleSessionModelCustomSubmit() {
                 </button>
               </div>
               <div class="chat-tool-content">
-                <FilesPanel v-show="activeToolPanel === 'files'" />
+                <FilesPanel
+                  v-show="activeToolPanel === 'files'"
+                  :workspace-session-id="activeWorkspaceSessionId"
+                  :workspace="activeWorkspacePath"
+                />
                 <TerminalPanel
                   v-show="activeToolPanel === 'terminal'"
                   :visible="showToolPanel && activeToolPanel === 'terminal'"

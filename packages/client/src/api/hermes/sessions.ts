@@ -176,6 +176,16 @@ export async function readSessionWorkspaceFile(
   )
 }
 
+export async function listSessionWorkspaceFiles(
+  sessionId: string,
+  path: string = '',
+): Promise<{ entries: Array<{ name: string; path: string; absolutePath?: string; isDir: boolean; size: number; modTime: string }>; path: string; absolutePath?: string }> {
+  const params = new URLSearchParams()
+  if (path) params.set('path', path)
+  const query = params.toString()
+  return request(`/api/hermes/sessions/${encodeURIComponent(sessionId)}/workspace-files/list${query ? `?${query}` : ''}`)
+}
+
 export async function writeSessionWorkspaceFile(
   sessionId: string,
   path: string,
@@ -187,6 +197,34 @@ export async function writeSessionWorkspaceFile(
       method: 'PUT',
       body: JSON.stringify({ path, content }),
     },
+  )
+}
+
+export async function mkdirSessionWorkspaceFile(sessionId: string, path: string): Promise<void> {
+  await request<{ ok: boolean }>(
+    `/api/hermes/sessions/${encodeURIComponent(sessionId)}/workspace-file/mkdir`,
+    { method: 'POST', body: JSON.stringify({ path }) },
+  )
+}
+
+export async function deleteSessionWorkspaceFile(sessionId: string, path: string, recursive = false): Promise<void> {
+  await request<{ ok: boolean }>(
+    `/api/hermes/sessions/${encodeURIComponent(sessionId)}/workspace-file/delete`,
+    { method: 'DELETE', body: JSON.stringify({ path, recursive }) },
+  )
+}
+
+export async function renameSessionWorkspaceFile(sessionId: string, oldPath: string, newPath: string): Promise<void> {
+  await request<{ ok: boolean }>(
+    `/api/hermes/sessions/${encodeURIComponent(sessionId)}/workspace-file/rename`,
+    { method: 'POST', body: JSON.stringify({ oldPath, newPath }) },
+  )
+}
+
+export async function copySessionWorkspaceFile(sessionId: string, srcPath: string, destPath: string): Promise<void> {
+  await request<{ ok: boolean }>(
+    `/api/hermes/sessions/${encodeURIComponent(sessionId)}/workspace-file/copy`,
+    { method: 'POST', body: JSON.stringify({ srcPath, destPath }) },
   )
 }
 

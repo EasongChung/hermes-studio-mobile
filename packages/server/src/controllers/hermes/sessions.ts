@@ -35,8 +35,8 @@ import { codingAgentRunManager } from '../../services/agent-runner/coding-agent-
 import { AgentBridgeClient, getAgentBridgeManager } from '../../services/hermes/agent-bridge'
 import { ensureHermesRunWorkspace } from '../../services/hermes/run-chat/workspace'
 import { isSensitivePath, MAX_EDIT_SIZE } from '../../services/hermes/file-provider'
-import { readFile, stat as fsStat, writeFile } from 'fs/promises'
-import { normalize as pathNormalize, resolve as pathResolve } from 'path'
+import { copyFile, mkdir, readFile, readdir, rename as fsRename, rm as fsRm, stat as fsStat, writeFile } from 'fs/promises'
+import { relative, normalize as pathNormalize, resolve as pathResolve } from 'path'
 
 function getPendingDeletedSessionIds(): Set<string> {
   return getGroupChatServer()?.getStorage().getPendingDeletedSessionIds() || new Set<string>()
@@ -521,8 +521,9 @@ export async function getWorkspaceRunChangeFile(ctx: any) {
   ctx.body = { file }
 }
 
-function normalizeWorkspaceRelativePath(value: unknown): string {
+function normalizeWorkspaceRelativePath(value: unknown, options: { allowEmpty?: boolean } = {}): string {
   const raw = typeof value === 'string' ? value.trim() : ''
+  if (!raw && options.allowEmpty) return ''
   if (!raw) throw Object.assign(new Error('Missing path parameter'), { code: 'missing_path', status: 400 })
   if (raw.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(raw)) {
     throw Object.assign(new Error('Invalid file path'), { code: 'invalid_path', status: 400 })
@@ -534,13 +535,21 @@ function normalizeWorkspaceRelativePath(value: unknown): string {
   return normalized
 }
 
-function resolveSessionWorkspaceFile(ctx: any, relativePathValue: unknown): { session: ReturnType<typeof localGetSession>; relativePath: string; fullPath: string; workspace: string } {
+function workspaceRelativePath(workspace: string, fullPath: string): string {
+  return relative(workspace, fullPath).replace(/\\/g, '/')
+}
+
+function resolveSessionWorkspacePath(
+  ctx: any,
+  relativePathValue: unknown,
+  options: { allowEmpty?: boolean } = {},
+): { session: ReturnType<typeof localGetSession>; relativePath: string; fullPath: string; workspace: string } {
   const session = localGetSession(ctx.params.id)
   if (!session) throw Object.assign(new Error('Session not found'), { code: 'not_found', status: 404 })
   if (denySessionAccess(ctx, session)) throw Object.assign(new Error('Forbidden'), { code: 'forbidden', status: 403, handled: true })
   const workspace = String(session.workspace || '').trim()
   if (!workspace) throw Object.assign(new Error('Session workspace not found'), { code: 'workspace_not_found', status: 404 })
-  const relativePath = normalizeWorkspaceRelativePath(relativePathValue)
+  const relativePath = normalizeWorkspaceRelativePath(relativePathValue, options)
   const fullPath = pathResolve(workspace, relativePath)
   if (!isPathWithin(fullPath, workspace)) {
     throw Object.assign(new Error('Invalid file path'), { code: 'invalid_path', status: 400 })
@@ -548,11 +557,47 @@ function resolveSessionWorkspaceFile(ctx: any, relativePathValue: unknown): { se
   return { session, relativePath, fullPath, workspace }
 }
 
+function resolveSessionWorkspaceFile(ctx: any, relativePathValue: unknown) {
+  return resolveSessionWorkspacePath(ctx, relativePathValue)
+}
+
 function handleWorkspaceFileError(ctx: any, err: any): void {
   if (err?.handled) return
   const status = Number(err?.status || 0)
   ctx.status = status >= 400 ? status : err?.code === 'ENOENT' ? 404 : 500
   ctx.body = { error: err?.message || 'Failed to access workspace file', code: err?.code || 'workspace_file_error' }
+}
+
+export async function listWorkspaceFiles(ctx: any) {
+  try {
+    const { relativePath, fullPath, workspace } = resolveSessionWorkspacePath(ctx, ctx.query.path, { allowEmpty: true })
+    const info = await fsStat(fullPath)
+    if (!info.isDirectory()) {
+      ctx.status = 400
+      ctx.body = { error: 'Not a directory', code: 'not_a_directory' }
+      return
+    }
+    const entries = await readdir(fullPath, { withFileTypes: true })
+    const mapped = await Promise.all(entries.map(async entry => {
+      const entryFullPath = pathResolve(fullPath, entry.name)
+      const stat = await fsStat(entryFullPath)
+      return {
+        name: entry.name,
+        path: workspaceRelativePath(workspace, entryFullPath),
+        absolutePath: entryFullPath,
+        isDir: stat.isDirectory(),
+        size: stat.size,
+        modTime: stat.mtime.toISOString(),
+      }
+    }))
+    mapped.sort((a, b) => {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+    ctx.body = { entries: mapped, path: relativePath, absolutePath: fullPath }
+  } catch (err: any) {
+    handleWorkspaceFileError(ctx, err)
+  }
 }
 
 export async function readWorkspaceFile(ctx: any) {
@@ -594,6 +639,78 @@ export async function writeWorkspaceFile(ctx: any) {
     }
     await writeFile(fullPath, data)
     ctx.body = { ok: true, path: relativePath }
+  } catch (err: any) {
+    handleWorkspaceFileError(ctx, err)
+  }
+}
+
+export async function mkdirWorkspaceFile(ctx: any) {
+  const body = ctx.request.body as { path?: unknown }
+  try {
+    const { fullPath } = resolveSessionWorkspaceFile(ctx, body?.path)
+    await mkdir(fullPath, { recursive: true })
+    ctx.body = { ok: true }
+  } catch (err: any) {
+    handleWorkspaceFileError(ctx, err)
+  }
+}
+
+export async function deleteWorkspaceFile(ctx: any) {
+  const body = ctx.request.body as { path?: unknown; recursive?: unknown }
+  try {
+    const { relativePath, fullPath } = resolveSessionWorkspaceFile(ctx, body?.path)
+    if (isSensitivePath(relativePath)) {
+      ctx.status = 403
+      ctx.body = { error: 'Cannot delete sensitive file', code: 'permission_denied' }
+      return
+    }
+    const info = await fsStat(fullPath)
+    if (info.isDirectory()) {
+      await fsRm(fullPath, { recursive: Boolean(body?.recursive), force: false })
+    } else {
+      await fsRm(fullPath)
+    }
+    ctx.body = { ok: true }
+  } catch (err: any) {
+    handleWorkspaceFileError(ctx, err)
+  }
+}
+
+export async function renameWorkspaceFile(ctx: any) {
+  const body = ctx.request.body as { oldPath?: unknown; newPath?: unknown }
+  try {
+    const oldTarget = resolveSessionWorkspaceFile(ctx, body?.oldPath)
+    const newTarget = resolveSessionWorkspaceFile(ctx, body?.newPath)
+    if (isSensitivePath(oldTarget.relativePath) || isSensitivePath(newTarget.relativePath)) {
+      ctx.status = 403
+      ctx.body = { error: 'Cannot rename sensitive file', code: 'permission_denied' }
+      return
+    }
+    await fsRename(oldTarget.fullPath, newTarget.fullPath)
+    ctx.body = { ok: true }
+  } catch (err: any) {
+    handleWorkspaceFileError(ctx, err)
+  }
+}
+
+export async function copyWorkspaceFile(ctx: any) {
+  const body = ctx.request.body as { srcPath?: unknown; destPath?: unknown }
+  try {
+    const srcTarget = resolveSessionWorkspaceFile(ctx, body?.srcPath)
+    const destTarget = resolveSessionWorkspaceFile(ctx, body?.destPath)
+    if (isSensitivePath(destTarget.relativePath)) {
+      ctx.status = 403
+      ctx.body = { error: 'Cannot overwrite sensitive file', code: 'permission_denied' }
+      return
+    }
+    const info = await fsStat(srcTarget.fullPath)
+    if (!info.isFile()) {
+      ctx.status = 400
+      ctx.body = { error: 'Not a file', code: 'not_a_file' }
+      return
+    }
+    await copyFile(srcTarget.fullPath, destTarget.fullPath)
+    ctx.body = { ok: true }
   } catch (err: any) {
     handleWorkspaceFileError(ctx, err)
   }
@@ -1346,7 +1463,7 @@ export async function renameWorkspaceFolder(ctx: any) {
       ctx.body = { error: 'Path is not a directory' }
       return
     }
-    await rename(resolvedCurrent.fullPath, targetPath)
+    await fsRename(resolvedCurrent.fullPath, targetPath)
     ctx.body = { ok: true }
   } catch (err: any) {
     ctx.status = err?.code === 'EEXIST' ? 409 : err?.code === 'ENOENT' ? 404 : 500
@@ -1384,7 +1501,7 @@ export async function deleteWorkspaceFolder(ctx: any) {
       ctx.body = { error: 'Path is not a directory' }
       return
     }
-    await rm(resolvedCurrent.fullPath, { recursive: true })
+    await fsRm(resolvedCurrent.fullPath, { recursive: true })
     ctx.body = { ok: true }
   } catch (err: any) {
     ctx.status = err?.code === 'ENOENT' ? 404 : 500

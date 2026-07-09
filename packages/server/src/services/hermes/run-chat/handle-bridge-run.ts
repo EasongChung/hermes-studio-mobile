@@ -340,6 +340,7 @@ export async function handleBridgeRun(
     : getSystemPrompt(undefined, { source: data.session_source || data.source })
   const sessionRow = getSession(session_id)
   const workspace = await ensureHermesRunWorkspace(profile, sessionRow?.workspace || data.workspace)
+  const shouldEmitWorkspaceUpdate = Boolean(workspace && !sessionRow?.workspace)
   if (sessionRow && !sessionRow.workspace) updateSession(session_id, { workspace })
   const sessionModel = sessionRow?.model || ''
   const sessionProvider = sessionRow?.provider || ''
@@ -460,6 +461,12 @@ export async function handleBridgeRun(
     if (!data.onEvent && !nsp.adapter.rooms.get(`session:${session_id}`)?.size && socket.connected) {
       socket.emit(event, tagged)
     }
+  }
+  if (shouldEmitWorkspaceUpdate) {
+    emit('session.workspace.updated', {
+      event: 'session.workspace.updated',
+      workspace,
+    })
   }
 
   const history = await buildCompressedHistory(
