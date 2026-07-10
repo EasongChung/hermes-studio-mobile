@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 基础主题：无 ActionBar，全屏 WebView -->
-    <style name="Theme.HermesStudioMobile" parent="Theme.AppCompat.DayNight.NoActionBar">
+    <!-- 基础主题：Material3 DayNight 主题，全屏无 ActionBar
+         必须使用 Material3 主题，因为 layout 中使用了 Widget.Material3.* 组件
+         （如 TextInputLayout OutlinedBox），AppCompat 主题会闪退 -->
+    <style name="Theme.HermesStudioMobile" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="colorPrimary">#2196F3</item>
         <item name="colorPrimaryVariant">#1976D2</item>
         <item name="colorOnPrimary">#FFFFFF</item>
