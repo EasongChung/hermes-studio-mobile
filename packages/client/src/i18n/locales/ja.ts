@@ -228,6 +228,7 @@ export default {
     changelog: '更新履歴',
     noChangelog: '更新履歴はありません',
     versionManagement: 'バージョン管理',
+    updateAvailableLabel: '(新バージョンあり)',
     kanban: 'カンバン',
     workflow: 'ワークフロー',
     groupTools: 'ツール',
@@ -2040,6 +2041,15 @@ export default {
 
   // 更新履歴
   changelog: {
+    new_0_6_28_1: 'このリリースは 0.6.27 以降にマージされた PR を反映し、MCU 管理、グループチャット workspace diff、Coding Agent 修正、Workflow 承認、workspace diff フィルタ、scheduled job のモデル選択、desktop の新バージョン表示を含みます',
+    new_0_6_28_2: 'MCU はデバイス管理を追加し、global-agent event に API token 認可を要求し、ESP32-C3 firmware を更新し、remote relay login を安定化しました',
+    new_0_6_28_3: 'グループチャットの workspace 変更は workspace diff run として保存され、room-level agent activity をセッション完了後に確認できます',
+    new_0_6_28_4: 'Coding Agent は scoped external MCP server を継承し、workflow agent abort を正しくルーティングし、完了した Codex / Claude Code native session を best-effort で export します',
+    new_0_6_28_5: 'Workspace file drawer を修正し、壊れた starred-history embed を削除し、bridge session の ended_at と end_reason metadata を記録します',
+    new_0_6_28_6: 'Workflow node は完了後の approval gate をサポートし、繰り返し実行時の rerun approval state も修正しました',
+    new_0_6_28_7: 'Workspace diff は SQLite WAL/SHM sidecar を除外し、未変更ファイルを越えて scan するため、新規作成された通常ファイルが表示されます',
+    new_0_6_28_8: 'Scheduled job は provider/model を選択して保存でき、現在の Hermes cron CLI が未対応の model flag は渡しません',
+    new_0_6_28_9: 'Desktop のバージョン管理ボタンは更新可能なときにローカライズされた新バージョン表示を出し、公開 version manifest に 0.6.28 を追加しました',
     new_0_6_27_1: 'このリリースは 0.6.26 以降にマージされたすべての PR を反映し、デスクトップ起動フォールバック、Windows runtime 修正、remote MCU relay、グループチャット workspace、default workspace の調整、空 diff の除外を含みます',
     new_0_6_27_2: 'デスクトップ起動は、active Web UI ディレクトリが欠落または不完全な場合に bundled Web UI へフォールバックし、pinned runtime は維持します',
     new_0_6_27_3: 'Windows desktop runtime は、Web UI server 呼び出しで壊れやすい .exe trampoline の代わりに、移動可能な hermes.cmd wrapper を使うようになりました',

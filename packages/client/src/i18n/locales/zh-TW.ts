@@ -238,6 +238,7 @@ export default {
     changelog: '更新日誌',
     noChangelog: '目前無更新日誌',
     versionManagement: '版本管理',
+    updateAvailableLabel: '(有新版)',
   },
 
   runtimeVersions: {
@@ -2424,6 +2425,15 @@ export default {
 
   // 更新日誌
   changelog: {
+    new_0_6_28_1: '本版本彙總 0.6.27 之後合併的 PR：MCU 管理、群聊 workspace diff、Coding Agent 修復、Workflow 審批、workspace diff 過濾、排程任務模型選擇和桌面端版本提示都已納入',
+    new_0_6_28_2: 'MCU 支援新增裝置管理，global-agent 事件要求 API token 授權，ESP32-C3 韌體已更新，遠端 relay 登入也更穩定',
+    new_0_6_28_3: '群聊 workspace 變更會持久化為 workspace diff run，房間級 agent 活動在會話結束後仍可回看',
+    new_0_6_28_4: 'Coding Agent 會繼承 scoped external MCP server，workflow agent abort 路由更準確，並會盡力匯出完成後的 Codex 與 Claude Code 原生會話',
+    new_0_6_28_5: '會話體驗修復了 workspace 檔案抽屜、移除損壞的星標歷史 embed，並記錄 bridge 會話 ended_at 和 end_reason metadata',
+    new_0_6_28_6: 'Workflow 節點支援完成後的審批門禁，重複執行時的審批重跑狀態也已修正',
+    new_0_6_28_7: 'Workspace diff 會過濾 SQLite WAL/SHM sidecar，並跳過未變更檔案繼續掃描，確保新建的普通檔案不會被隱藏',
+    new_0_6_28_8: '排程任務支援選擇並持久化 provider/model，同時不會把目前 Hermes cron CLI 不支援的模型參數傳給 CLI',
+    new_0_6_28_9: '桌面端版本管理按鈕會在有更新時顯示國際化的「有新版」提示，公開版本清單也加入 0.6.28',
     new_0_6_27_1: '本版本彙總 0.6.26 之後合併的 PR：桌面端啟動兜底、Windows runtime、遠端 MCU、群聊工作區、預設工作區收藏與空 diff 過濾都已納入',
     new_0_6_27_2: '桌面端啟動更穩：當 active Web UI 目錄缺失或損壞時，會清理失效 Web UI 指標並回退到內建 Web UI，同時保留 runtime pin',
     new_0_6_27_3: 'Windows 桌面 runtime 改用可遷移的 hermes.cmd wrapper，避免舊 .exe trampoline 在 Web UI server 呼叫時失效',

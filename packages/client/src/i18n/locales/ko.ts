@@ -228,6 +228,7 @@ export default {
     changelog: '변경 이력',
     noChangelog: '변경 이력이 없습니다',
     versionManagement: '버전 관리',
+    updateAvailableLabel: '(새 버전 있음)',
     kanban: '칸반',
     workflow: '워크플로',
     groupTools: '도구',
@@ -2040,6 +2041,15 @@ export default {
 
   // 변경 이력
   changelog: {
+    new_0_6_28_1: '이번 릴리스는 0.6.27 이후 병합된 PR을 반영하며 MCU 관리, 그룹 채팅 workspace diff, Coding Agent 수정, Workflow 승인, workspace diff 필터링, scheduled job 모델 선택, desktop 새 버전 표시를 포함합니다',
+    new_0_6_28_2: 'MCU는 device management를 추가하고 global-agent event에 API token 인증을 요구하며 ESP32-C3 firmware를 갱신하고 remote relay login을 안정화했습니다',
+    new_0_6_28_3: '그룹 채팅 workspace 변경은 workspace diff run으로 저장되어 세션 완료 후에도 room-level agent activity를 확인할 수 있습니다',
+    new_0_6_28_4: 'Coding Agent는 scoped external MCP server를 상속하고 workflow agent abort를 올바르게 라우팅하며 완료된 Codex 및 Claude Code native session을 best-effort로 export합니다',
+    new_0_6_28_5: 'Workspace file drawer를 수정하고 깨진 starred-history embed를 제거했으며 bridge session의 ended_at 및 end_reason metadata를 기록합니다',
+    new_0_6_28_6: 'Workflow node는 완료 후 approval gate를 지원하고 반복 실행 시 rerun approval state도 수정했습니다',
+    new_0_6_28_7: 'Workspace diff는 SQLite WAL/SHM sidecar를 필터링하고 변경 없는 파일을 지나 계속 scan해 새로 만든 일반 파일이 보이도록 합니다',
+    new_0_6_28_8: 'Scheduled job은 provider/model을 선택해 저장할 수 있으며 현재 Hermes cron CLI가 지원하지 않는 model flag는 전달하지 않습니다',
+    new_0_6_28_9: 'Desktop 버전 관리 버튼은 업데이트가 있을 때 지역화된 새 버전 표시를 보여주며 public version manifest에 0.6.28을 추가했습니다',
     new_0_6_27_1: '이번 릴리스는 0.6.26 이후 병합된 모든 PR을 반영하며 데스크톱 시작 fallback, Windows runtime 수정, remote MCU relay, 그룹 채팅 workspace, 기본 workspace 개선, 빈 diff 필터링을 포함합니다',
     new_0_6_27_2: '데스크톱 시작은 active Web UI 디렉터리가 없거나 불완전할 때 bundled Web UI로 fallback하며 pinned runtime은 유지합니다',
     new_0_6_27_3: 'Windows 데스크톱 runtime은 Web UI server 호출에서 취약한 .exe trampoline 대신 이동 가능한 hermes.cmd wrapper를 사용합니다',

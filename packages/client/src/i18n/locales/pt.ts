@@ -228,6 +228,7 @@ export default {
     changelog: 'Registro de alteracoes',
     noChangelog: 'Nenhum registro disponivel',
     versionManagement: 'Gerenciamento de versões',
+    updateAvailableLabel: '(Nova versão)',
     kanban: 'Kanban',
     workflow: 'Workflow',
     groupTools: 'Ferramentas',
@@ -2041,6 +2042,15 @@ jobTriggered: 'Job acionado',
 
   // Registro de alteracoes
   changelog: {
+    new_0_6_28_1: 'Esta versão cobre todos os PRs mesclados após a 0.6.27, incluindo gestão de MCU, diffs de workspace no Group Chat, correções do Coding Agent, aprovações de Workflow, filtro de diffs, seleção de modelo em jobs agendados e aviso desktop de nova versão',
+    new_0_6_28_2: 'MCU adiciona gestão de dispositivos, exige token API para eventos global-agent, atualiza o firmware ESP32-C3 e estabiliza o login do relay remoto',
+    new_0_6_28_3: 'Mudanças de workspace do Group Chat são persistidas como workspace diff runs para revisar a atividade do agent da sala após a sessão',
+    new_0_6_28_4: 'Coding Agents herdam servidores MCP externos com escopo, roteiam aborts de workflow agent corretamente e exportam best-effort sessões nativas Codex e Claude Code concluídas',
+    new_0_6_28_5: 'As sessões corrigem o drawer de arquivos workspace, removem embeds quebrados do histórico favorito e gravam metadados ended_at/end_reason para sessões bridge',
+    new_0_6_28_6: 'Nós de Workflow agora suportam approval gates após a conclusão e corrigem estados de aprovação em reexecuções',
+    new_0_6_28_7: 'Diffs de workspace filtram sidecars SQLite WAL/SHM e continuam escaneando além de arquivos inalterados para manter novos arquivos comuns visíveis',
+    new_0_6_28_8: 'Jobs agendados podem escolher e persistir provider/model sem passar flags de modelo não suportados para a CLI Hermes cron atual',
+    new_0_6_28_9: 'A gestão de versões desktop mostra um aviso localizado de nova versão no botão, e o manifest público inclui 0.6.28',
     new_0_6_27_1: 'Esta versão cobre todos os PRs mesclados após a 0.6.26, incluindo fallback de inicialização do desktop, correções do runtime no Windows, relay remoto do MCU, workspaces no chat em grupo, ajustes do workspace padrão e filtro de diffs vazios',
     new_0_6_27_2: 'A inicialização do desktop agora usa o Web UI incluído como fallback quando o diretório active Web UI está ausente ou incompleto, preservando o runtime fixado',
     new_0_6_27_3: 'Os runtimes do desktop no Windows agora usam wrappers hermes.cmd relocáveis em vez de trampolines .exe frágeis para chamadas do Web UI server',

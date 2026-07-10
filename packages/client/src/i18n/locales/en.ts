@@ -238,6 +238,7 @@ export default {
     changelog: 'Changelog',
     noChangelog: 'No changelog available',
     versionManagement: 'Version Management',
+    updateAvailableLabel: '(New version)',
   },
 
   runtimeVersions: {
@@ -2420,6 +2421,15 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_6_28_1: 'This release covers every PR merged after 0.6.27, including MCU management, group chat workspace diffs, coding-agent fixes, workflow approvals, workspace diff filtering, scheduled-job model selection, and desktop version update hints',
+    new_0_6_28_2: 'MCU support adds device management, requires API-token authorization for global-agent events, refreshes the ESP32-C3 firmware, and stabilizes remote relay login',
+    new_0_6_28_3: 'Group Chat workspace changes now persist as workspace diff runs so room-level agent activity can be reviewed after the session completes',
+    new_0_6_28_4: 'Coding agents now inherit scoped external MCP servers, route aborts to the right workflow agent, and best-effort export completed Codex and Claude Code native sessions',
+    new_0_6_28_5: 'Session polish fixes the workspace file drawer, removes broken starred-history embeds, and records bridge session ended_at and end_reason metadata',
+    new_0_6_28_6: 'Workflow nodes now support approval gates after node completion, with rerun approval states corrected for repeated workflow execution',
+    new_0_6_28_7: 'Workspace diff cards filter SQLite WAL/SHM sidecars and keep scanning past unchanged files so newly created ordinary files stay visible',
+    new_0_6_28_8: 'Scheduled jobs can choose and persist provider/model settings without passing unsupported model flags to the current Hermes cron CLI',
+    new_0_6_28_9: 'Desktop version management now shows a localized new-version hint on its button when an update is available, and the public version manifest includes 0.6.28',
     new_0_6_27_1: 'This release covers every PR merged after 0.6.26, including desktop startup fallback, Windows runtime fixes, remote MCU relay, group chat workspaces, default workspace polish, and empty diff filtering',
     new_0_6_27_2: 'Desktop startup now falls back to the bundled Web UI when the active Web UI directory is missing or incomplete, while preserving the pinned runtime',
     new_0_6_27_3: 'Windows desktop runtimes now use relocatable hermes.cmd wrappers instead of fragile .exe trampolines for Web UI server invocations',

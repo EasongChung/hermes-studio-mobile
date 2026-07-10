@@ -228,6 +228,7 @@ export default {
     changelog: 'Journal des modifications',
     noChangelog: 'Aucun journal disponible',
     versionManagement: 'Gestion des versions',
+    updateAvailableLabel: '(Nouvelle version)',
     kanban: 'Kanban',
     workflow: 'Workflow',
     groupTools: 'Outils',
@@ -2041,6 +2042,15 @@ jobTriggered: 'Job declenche',
 
   // Journal des modifications
   changelog: {
+    new_0_6_28_1: 'Cette version couvre tous les PR fusionnés après la 0.6.27, avec gestion MCU, diffs de workspace en Group Chat, correctifs Coding Agent, approbations Workflow, filtrage des diffs, choix de modèle pour les jobs planifiés et indicateur desktop de nouvelle version',
+    new_0_6_28_2: 'Le MCU ajoute la gestion des appareils, exige un token API pour les événements global-agent, met à jour le firmware ESP32-C3 et stabilise la connexion du relay distant',
+    new_0_6_28_3: 'Les changements de workspace du Group Chat sont persistés comme workspace diff runs afin de revoir l’activité agent de la room après la fin de session',
+    new_0_6_28_4: 'Les Coding Agents héritent des serveurs MCP externes scopés, routent correctement les annulations workflow agent et exportent au mieux les sessions natives Codex et Claude Code terminées',
+    new_0_6_28_5: 'Les sessions corrigent le drawer de fichiers workspace, suppriment les embeds d’historique favori cassés et enregistrent les métadonnées ended_at/end_reason des sessions bridge',
+    new_0_6_28_6: 'Les nœuds Workflow prennent en charge les portes d’approbation après achèvement, avec des états de réexécution corrigés',
+    new_0_6_28_7: 'Les diffs workspace filtrent les sidecars SQLite WAL/SHM et continuent au-delà des fichiers inchangés pour garder visibles les nouveaux fichiers ordinaires',
+    new_0_6_28_8: 'Les jobs planifiés peuvent choisir et persister provider/model sans transmettre de flags de modèle non pris en charge à la CLI Hermes cron actuelle',
+    new_0_6_28_9: 'La gestion des versions desktop affiche un indicateur localisé de nouvelle version sur son bouton, et le manifest public inclut 0.6.28',
     new_0_6_27_1: 'Cette version couvre tous les PR fusionnés après la 0.6.26, avec le fallback de démarrage desktop, les correctifs du runtime Windows, le relay MCU distant, les workspaces de chat de groupe, les ajustements du workspace par défaut et le filtrage des diffs vides',
     new_0_6_27_2: 'Le démarrage desktop bascule maintenant vers la Web UI intégrée lorsque le dossier active Web UI est absent ou incomplet, tout en conservant le runtime épinglé',
     new_0_6_27_3: 'Les runtimes desktop Windows utilisent désormais des wrappers hermes.cmd relocalisables au lieu de trampolines .exe fragiles pour les appels du Web UI server',

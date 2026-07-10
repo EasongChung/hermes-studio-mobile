@@ -160,6 +160,7 @@ export default {
     changelog: 'Список изменений',
     noChangelog: 'Нет списка изменений',
     versionManagement: 'Управление версиями',
+    updateAvailableLabel: '(Новая версия)',
   },
 
   runtimeVersions: {
@@ -2168,6 +2169,15 @@ export default {
   },
 
   changelog: {
+    new_0_6_28_1: 'Этот релиз включает все PR после 0.6.27: управление MCU, workspace diff для Group Chat, исправления Coding Agent, approvals в Workflow, фильтрацию workspace diff, выбор модели для scheduled jobs и desktop-индикатор новой версии',
+    new_0_6_28_2: 'MCU получил управление устройствами, API-token авторизацию для global-agent events, обновленную прошивку ESP32-C3 и более стабильный remote relay login',
+    new_0_6_28_3: 'Изменения workspace в Group Chat сохраняются как workspace diff runs, чтобы активность agent в комнате можно было проверить после завершения сессии',
+    new_0_6_28_4: 'Coding Agents наследуют scoped external MCP servers, правильно направляют workflow agent aborts и best-effort экспортируют завершенные native sessions Codex и Claude Code',
+    new_0_6_28_5: 'Исправлен workspace file drawer, удалены сломанные starred-history embeds, а bridge sessions теперь записывают ended_at и end_reason metadata',
+    new_0_6_28_6: 'Workflow nodes поддерживают approval gates после завершения node, а состояния approval при повторном запуске workflow исправлены',
+    new_0_6_28_7: 'Workspace diff фильтрует SQLite WAL/SHM sidecars и продолжает scan после неизмененных файлов, чтобы новые обычные файлы оставались видимыми',
+    new_0_6_28_8: 'Scheduled jobs могут выбирать и сохранять provider/model, не передавая неподдерживаемые model flags в текущую Hermes cron CLI',
+    new_0_6_28_9: 'Desktop version management показывает локализованный индикатор новой версии на кнопке, а public version manifest включает 0.6.28',
     new_0_6_27_1: 'Этот релиз включает все PR, объединенные после 0.6.26: fallback запуска desktop, исправления Windows runtime, remote MCU relay, workspace для группового чата, доработки workspace по умолчанию и фильтрацию пустых diff',
     new_0_6_27_2: 'Запуск desktop теперь откатывается к встроенному Web UI, если каталог active Web UI отсутствует или неполный, при этом закрепленный runtime сохраняется',
     new_0_6_27_3: 'Windows desktop runtime теперь использует переносимые wrappers hermes.cmd вместо хрупких .exe trampolines для вызовов Web UI server',

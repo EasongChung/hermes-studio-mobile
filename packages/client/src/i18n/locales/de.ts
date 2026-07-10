@@ -228,6 +228,7 @@ export default {
     changelog: 'Anderungsprotokoll',
     noChangelog: 'Kein Anderungsprotokoll verfugbar',
     versionManagement: 'Versionsverwaltung',
+    updateAvailableLabel: '(Neue Version)',
     kanban: 'Kanban',
     workflow: 'Workflow',
     groupTools: 'Werkzeuge',
@@ -2041,6 +2042,15 @@ jobTriggered: 'Job ausgelost',
 
   // Anderungsprotokoll
   changelog: {
+    new_0_6_28_1: 'Diese Version umfasst alle nach 0.6.27 gemergten PRs, darunter MCU-Verwaltung, Gruppenchat-Workspace-Diffs, Coding-Agent-Fixes, Workflow-Freigaben, Workspace-Diff-Filter, Modellwahl fuer geplante Jobs und Desktop-Versionshinweise',
+    new_0_6_28_2: 'MCU erhaelt Device Management, verlangt API-Token-Autorisierung fuer global-agent Events, aktualisiert die ESP32-C3-Firmware und stabilisiert den Remote-Relay-Login',
+    new_0_6_28_3: 'Gruppenchat-Workspace-Aenderungen werden als Workspace-Diff-Runs gespeichert, damit room-level Agent-Aktivitaet nach Sitzungsende pruefbar bleibt',
+    new_0_6_28_4: 'Coding Agents erben scoped external MCP servers, routen Workflow-Agent-Abbrueche korrekt und exportieren abgeschlossene Codex- und Claude-Code-Native-Sessions best-effort',
+    new_0_6_28_5: 'Session-Polish behebt den Workspace File Drawer, entfernt defekte Starred-History-Embeds und speichert ended_at/end_reason-Metadaten fuer Bridge-Sessions',
+    new_0_6_28_6: 'Workflow Nodes unterstuetzen Approval Gates nach Node-Abschluss, und Approval-Zustaende fuer erneute Ausfuehrungen wurden korrigiert',
+    new_0_6_28_7: 'Workspace-Diffs filtern SQLite WAL/SHM-Sidecars und scannen ueber unveraenderte Dateien hinaus, damit neu erstellte normale Dateien sichtbar bleiben',
+    new_0_6_28_8: 'Geplante Jobs koennen provider/model auswaehlen und speichern, ohne nicht unterstuetzte Model-Flags an die aktuelle Hermes cron CLI zu uebergeben',
+    new_0_6_28_9: 'Die Desktop-Versionsverwaltung zeigt bei verfuegbaren Updates einen lokalisierten Hinweis am Button, und das oeffentliche Versionsmanifest enthaelt 0.6.28',
     new_0_6_27_1: 'Diese Version umfasst alle nach 0.6.26 gemergten PRs, einschliesslich Desktop-Start-Fallback, Windows-Runtime-Fixes, Remote-MCU-Relay, Gruppenchat-Workspaces, Feinschliff am Standard-Workspace und Filterung leerer Diffs',
     new_0_6_27_2: 'Der Desktop-Start faellt jetzt auf die gebuendelte Web UI zurueck, wenn das aktive Web-UI-Verzeichnis fehlt oder unvollstaendig ist, und behaelt dabei die gepinnte Runtime bei',
     new_0_6_27_3: 'Windows-Desktop-Runtimes verwenden fuer Web-UI-Server-Aufrufe jetzt verschiebbare hermes.cmd-Wrapper statt anfaelliger .exe-Trampolines',
