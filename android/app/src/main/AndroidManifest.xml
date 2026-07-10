@@ -2,18 +2,18 @@
 <!-- AndroidManifest.xml
      声明 APP 组件、权限、硬件/软件特性。
 
-     切换为 HTTP 远程加载模式：
-     不再从本地 assets/hermes/ 加载前端，改为直接加载用户配置的
-     服务器 URL。所有 API 请求同源，无需任何跨域注入或权限。
+     加载策略：本地加载前端，远程调用 API
+     前端打包在 APK assets/hermes/ 中 file:// 本地加载，
+     API 请求通过 WebView 跨源访问发往远程服务器。
 
      - INTERNET 权限：WebView 访问网络必需
-     - usesCleartextTraffic：允许连接 HTTP 局域网服务器
+     - usesCleartextTraffic：允许 HTTP 明文 API 请求
      - configChanges：横竖屏切换不重建 Activity
      - hardwareAccelerated：硬件加速提升 WebView 渲染性能 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- 网络访问权限（WebView 加载页面和 API 通信必需） -->
+    <!-- 网络访问权限（API 请求必需） -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 网络状态访问权限（用于检测网络变化） -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
