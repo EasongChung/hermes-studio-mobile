@@ -86,10 +86,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 设置 WebViewClient，传入注入回调
-        webView.webViewClient = HermesWebViewClient { injectedUrl ->
+        // 注意：必须先设置 serverUrl，否则 onPageFinished 中不会触发注入
+        val webViewClient = HermesWebViewClient { injectedUrl ->
             // 页面加载完成后，注入 Server URL 到前端 localStorage
             injectServerUrl(injectedUrl)
         }
+        webViewClient.serverUrl = serverUrl
+        webView.webViewClient = webViewClient
         webView.webChromeClient = HermesChromeClient()
 
         // 启用 WebView 远程调试（仅在 debug 构建有效）
