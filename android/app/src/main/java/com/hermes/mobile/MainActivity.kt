@@ -74,9 +74,9 @@ class MainActivity : AppCompatActivity() {
             builtInZoomControls = true
             displayZoomControls = false
             // 支持多窗口（如新标签页）
-            setSupportMultipleWindows = false
+            setSupportMultipleWindows(false)
             // 聚焦时自动请求焦点
-            setNeedInitialFocus = true
+            setNeedInitialFocus(true)
         }
 
         // 设置 WebViewClient（控制页面加载行为）
