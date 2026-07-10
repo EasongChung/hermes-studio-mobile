@@ -1,9 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- AndroidManifest.xml
      声明 APP 组件、权限、硬件/软件特性。
-     关键配置说明：
+
+     切换为 HTTP 远程加载模式：
+     不再从本地 assets/hermes/ 加载前端，改为直接加载用户配置的
+     服务器 URL。所有 API 请求同源，无需任何跨域注入或权限。
+
      - INTERNET 权限：WebView 访问网络必需
-     - networkSecurityConfig：允许调试阶段 HTTP 明文访问
+     - usesCleartextTraffic：允许连接 HTTP 局域网服务器
      - configChanges：横竖屏切换不重建 Activity
      - hardwareAccelerated：硬件加速提升 WebView 渲染性能 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
@@ -21,7 +25,6 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.HermesStudioMobile"
         android:usesCleartextTraffic="true"
-        android:networkSecurityConfig="@xml/network_security_config"
         tools:targetApi="34">
 
         <activity

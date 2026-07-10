@@ -3,10 +3,11 @@ package com.hermes.mobile
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.os.Bundle
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
 import com.hermes.mobile.client.HermesChromeClient
-import com.hermes.mobile.client.HermesWebViewClient
 import com.hermes.mobile.config.ServerConfig
 
 /**
@@ -15,18 +16,23 @@ import com.hermes.mobile.config.ServerConfig
  * 职责：
  * 1. 检查服务器地址是否已配置，未配置则跳转 ConfigActivity
  * 2. 创建并配置 WebView 实例
- * 3. 加载本地前端资源（assets/hermes/index.html）
- * 4. 页面加载完成后注入 Server URL 到前端 localStorage
+ * 3. 直接从服务器加载前端（同源请求，无需跨域注入）
+ * 4. 页面加载完成后注入移动端标记
  *
  * 加载流程：
  * 首次启动 → 检查配置 → 未配置 → 跳转 ConfigActivity
- *                     → 已配置 → 加载本地前端 → onPageFinished 注入 URL
+ *                     → 已配置 → 加载 http://服务器/ → 页面加载完成
+ *
+ * 为什么不从 assets/hermes/ 本地加载：
+ * Hermes 网关本身就是全栈服务，前端、API、WebSocket 共用一个地址。
+ * 从 file:// 加载前端会导致跨源 HTTP 请求被 WebView 安全策略拦截，
+ * 即使启用 allowUniversalAccessFromFileURLs 在某些 Android 版本仍不可靠。
+ * 直接从 HTTP 加载，所有请求同源，没有任何跨域问题。
  */
 class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "HermesWeb"
-        private const val LOCAL_FRONTEND_URL = "file:///android_asset/hermes/index.html"
     }
 
     private lateinit var webView: WebView
@@ -59,11 +65,8 @@ class MainActivity : AppCompatActivity() {
     /**
      * 配置 WebView 的各项设置
      *
-     * 这些配置是前端正常运行的前提条件：
-     * - javaScriptEnabled：前端 Vue 框架基于 JS 运行
-     * - domStorageEnabled：localStorage 用于持久化配置
-     * - allowFileAccess：file:// 协议加载本地资源
-     * - mixedContentMode：允许 HTTP 页面加载 HTTPS 资源（反之亦然）
+     * 直接从 HTTP 服务器加载前端，不需要 file:// 相关权限和跨源设置。
+     * 请求同源，API 请求自然可以正常发送。
      */
     @SuppressLint("SetJavaScriptEnabled")
     private fun configureWebView() {
@@ -72,28 +75,33 @@ class MainActivity : AppCompatActivity() {
             domStorageEnabled = true
             databaseEnabled = true
             cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
-            allowFileAccess = true
-            allowFileAccessFromFileURLs = true
-            allowUniversalAccessFromFileURLs = true
-            allowContentAccess = true
             useWideViewPort = true
             loadWithOverviewMode = true
-            mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-            defaultTextEncodingName = "UTF-8"
             builtInZoomControls = true
             displayZoomControls = false
             setSupportMultipleWindows(false)
             setNeedInitialFocus(true)
         }
 
-        // 设置 WebViewClient，传入注入回调
-        // 注意：必须先设置 serverUrl，否则 onPageFinished 中不会触发注入
-        val webViewClient = HermesWebViewClient { injectedUrl ->
-            // 页面加载完成后，注入 Server URL 到前端 localStorage
-            injectServerUrl(injectedUrl)
+        // 设置 WebViewClient，页面加载完成后注入移动端标记
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                // 页面加载完成后注入移动端环境标记
+                injectMobileFlag()
+                // 注入页面 URL，确保前端 api/client.ts 中的
+                // getBaseUrl() 能正确读取到服务器地址
+                injectServerUrl()
+            }
+
+            // 拦截所有链接在当前 WebView 内打开
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): Boolean {
+                return false // 返回 false 让 WebView 自行处理
+            }
         }
-        webViewClient.serverUrl = serverUrl
-        webView.webViewClient = webViewClient
         webView.webChromeClient = HermesChromeClient()
 
         // 启用 WebView 远程调试（仅在 debug 构建有效）
@@ -101,32 +109,45 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 加载本地前端资源
+     * 从服务器加载前端
      *
-     * 从 assets/hermes/ 目录加载构建好的前端 dist 文件。
-     * 前端使用 Hash 路由，天然支持 file:// 协议。
+     * 直接访问服务器 HTTP 地址，Hermes 网关会返回前端页面。
+     * 所有 API 请求、WebSocket 连接自动同源，无需额外配置。
      */
     private fun loadFrontend() {
-        webView.loadUrl(LOCAL_FRONTEND_URL)
+        webView.loadUrl(serverUrl)
     }
 
     /**
-     * 注入 Server URL 到前端 localStorage
+     * 注入移动端环境标记到前端 localStorage
      *
-     * 在 onPageFinished 回调中执行 JavaScript，将 Server URL
-     * 写入 localStorage。前端通过 api/client.ts 中的 getBaseUrl()
-     * 读取 localStorage.getItem('hermes_server_url') 获取地址。
-     *
-     * 注入内容：
-     * - hermes_server_url: HTTP 基础地址（API 请求用）
-     * - hermes_ws_url: WebSocket 地址（socket.io 连接用，HTTP URL 派生）
-     * - hermes_is_mobile: 标记移动端环境
-     *
-     * @param url 要注入的服务器 HTTP 地址
+     * 前端某些 UI 组件根据 this.$hermesIsMobile 或 navigator.userAgent
+     * 判断移动端环境，额外注入标记确保兼容性。
      */
-    private fun injectServerUrl(url: String) {
-        val normalizedUrl = url.trimEnd('/')
-        // 从 HTTP URL 推导 WebSocket URL（http→ws，https→wss）
+    private fun injectMobileFlag() {
+        val js = """
+            (function() {
+                try {
+                    localStorage.setItem('hermes_is_mobile', 'true');
+                    console.log('[HermesMobile] Mobile flag injected');
+                } catch(e) {
+                    console.error('[HermesMobile] Injection failed:', e);
+                }
+            })();
+        """.trimIndent()
+
+        webView.evaluateJavascript(js, null)
+    }
+
+    /**
+     * 注入 Server URL 和 WebSocket URL 到前端 localStorage
+     *
+     * 虽然大部分请求同源不需要注入，但前端 api/client.ts 的 getBaseUrl()
+     * 默认读取 localStorage 中的 hermes_server_url。
+     * 同步注入确保任意场景下都能正确获取。
+     */
+    private fun injectServerUrl() {
+        val normalizedUrl = serverUrl.trimEnd('/')
         val wsUrl = normalizedUrl
             .replace("http://", "ws://")
             .replace("https://", "wss://")
