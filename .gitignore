@@ -52,3 +52,19 @@ CLAUDE.md
 # Client source map artifacts
 packages/client/src/**/*.js
 .hermes/
+
+# Android build artifacts
+android/.gradle/
+android/app/build/
+android/build/
+android/app/src/main/assets/hermes/
+android/local.properties
+android/captures
+*.apk
+*.aab
+*.ap_
+
+# Android IDE files
+*.iml
+.idea/
+.gradle/

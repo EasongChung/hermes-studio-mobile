@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- network_security_config.xml - 网络安全配置
+     允许调试阶段使用 HTTP 明文通信（连接本地 Hermes Server 时常用）
+     发布时如果只使用 HTTPS，可移除此配置 -->
+<network-security-config>
+    <!-- 默认情况下，允许所有明文通信（方便连接局域网 Server）
+         如果只使用 HTTPS，可改为只允许特定域名 -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -1,0 +1,110 @@
+# Hermes Studio Mobile - GitHub Actions 云编译工作流
+#
+# 触发条件：推送代码到 main 分支时自动执行
+#
+# 执行流程：
+# 1. 检出代码
+# 2. 安装 Node.js → npm install → npm run build（构建前端 dist）
+# 3. 复制 dist/client 到 android/app/src/main/assets/hermes/
+# 4. 安装 JDK 17 + Android SDK → ./gradlew assembleRelease（构建 APK）
+# 5. 上传 APK 构建产物
+#
+# 注意：本地不安装任何开发环境，所有编译依赖由 GitHub Actions 托管 Runner 提供
+
+name: Build Hermes Studio Mobile APK
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  # 允许手动触发
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: 检出代码
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: 安装 Node.js（Hermes Studio 前端要求 Node >= 23.0.0）
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '23'
+          cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
+
+      # Step 3: 安装前端依赖
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # Step 4: 构建前端 dist
+      # 关键：vite.config.ts 中 base 已设为 "./"，确保 file:// 协议下资源路径正确
+      - name: Build frontend dist
+        run: npm run build
+        # 构建完成后 dist/client/ 目录包含 index.html + assets/
+
+      # Step 5: 复制前端资源到 Android assets 目录
+      - name: Copy frontend dist to Android assets
+        run: |
+          mkdir -p android/app/src/main/assets/hermes
+          cp -r dist/client/* android/app/src/main/assets/hermes/
+          echo "=== Assets content ==="
+          ls -la android/app/src/main/assets/hermes/
+          echo "=== index.html exists? ==="
+          test -f android/app/src/main/assets/hermes/index.html && echo "YES" || echo "NO"
+
+      # Step 6: 安装 JDK 17（Android Gradle Plugin 8.x 要求）
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # Step 7: 设置 Android SDK
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # Step 8: 缓存 Gradle 依赖，加速后续构建
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle.kts', 'android/**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      # Step 9: 赋予 gradlew 执行权限
+      - name: Grant gradlew execute permission
+        run: chmod +x android/gradlew
+
+      # Step 10: 构建 Release APK
+      # 切换到 android/ 目录执行 Gradle 构建
+      - name: Build Release APK
+        run: |
+          cd android
+          ./gradlew assembleRelease --no-daemon
+
+      # Step 11: 上传 APK 构建产物
+      # 可从 GitHub Actions 页面的 Artifacts 下载
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-studio-mobile-release
+          path: android/app/build/outputs/apk/release/*.apk
+          # 保留 7 天
+          retention-days: 7
+
+      # Step 12: 上传 Debug APK（方便调试）
+      - name: Upload Debug APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-studio-mobile-debug
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 7
