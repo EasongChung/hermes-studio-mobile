@@ -48,6 +48,8 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")
     // Material Design 3 组件
     implementation("com.google.android.material:material:1.11.0")
+    // RecyclerView（服务器列表管理）
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
     // WebView 相关（AndroidX WebKit）
     implementation("androidx.webkit:webkit:1.9.0")
 }
