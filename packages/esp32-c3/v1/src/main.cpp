@@ -51,6 +51,7 @@ constexpr uint32_t kOledRefreshIntervalMs = 160;
 constexpr uint32_t kProvisionRestartDelayMs = 2500;
 constexpr uint32_t kProvisionRedirectDelayMs = 6500;
 constexpr int kMaxScannedNetworks = 20;
+constexpr int kMaxWifiHistoryNetworks = 5;
 constexpr uint16_t kLanDiscoveryLocalPort = 48630;
 constexpr uint16_t kHermesDiscoveryPort = 48640;
 constexpr uint32_t kLanDiscoveryTimeoutMs = 1200;
@@ -726,6 +727,100 @@ String prefString(const char *key) {
   String value = prefs.getString(key, "");
   prefs.end();
   return value;
+}
+
+String wifiHistorySsidKey(int index) {
+  return String(F("ssid")) + index;
+}
+
+String wifiHistoryPassKey(int index) {
+  return String(F("pass")) + index;
+}
+
+bool appendWifiCredential(String ssids[], String passes[], int &count, String ssid, const String &pass) {
+  ssid.trim();
+  if (ssid.length() == 0) return false;
+  for (int i = 0; i < count; ++i) {
+    if (ssids[i] == ssid) return false;
+  }
+  if (count >= kMaxWifiHistoryNetworks) return false;
+  ssids[count] = ssid;
+  passes[count] = pass;
+  ++count;
+  return true;
+}
+
+void loadWifiCredentials(String ssids[], String passes[], int &count) {
+  count = 0;
+  prefs.begin("net", true);
+  appendWifiCredential(ssids, passes, count, prefs.getString("ssid", ""), prefs.getString("pass", ""));
+  for (int i = 0; i < kMaxWifiHistoryNetworks; ++i) {
+    String ssidKey = wifiHistorySsidKey(i);
+    String passKey = wifiHistoryPassKey(i);
+    appendWifiCredential(ssids, passes, count, prefs.getString(ssidKey.c_str(), ""),
+                         prefs.getString(passKey.c_str(), ""));
+  }
+  prefs.end();
+}
+
+bool savedWifiPasswordForSsid(const String &ssid, String &pass) {
+  String ssids[kMaxWifiHistoryNetworks];
+  String passes[kMaxWifiHistoryNetworks];
+  int count = 0;
+  loadWifiCredentials(ssids, passes, count);
+  for (int i = 0; i < count; ++i) {
+    if (ssids[i] == ssid) {
+      pass = passes[i];
+      return true;
+    }
+  }
+  return false;
+}
+
+void rememberWifiCredential(const String &ssid, const String &pass) {
+  if (ssid.length() == 0) return;
+
+  String storedSsids[kMaxWifiHistoryNetworks];
+  String storedPasses[kMaxWifiHistoryNetworks];
+  int storedCount = 0;
+  loadWifiCredentials(storedSsids, storedPasses, storedCount);
+
+  String ssids[kMaxWifiHistoryNetworks];
+  String passes[kMaxWifiHistoryNetworks];
+  int count = 0;
+  appendWifiCredential(ssids, passes, count, ssid, pass);
+  for (int i = 0; i < storedCount; ++i) {
+    appendWifiCredential(ssids, passes, count, storedSsids[i], storedPasses[i]);
+  }
+
+  prefs.begin("net", false);
+  prefs.putString("ssid", ssid);
+  prefs.putString("pass", pass);
+  for (int i = 0; i < kMaxWifiHistoryNetworks; ++i) {
+    String ssidKey = wifiHistorySsidKey(i);
+    String passKey = wifiHistoryPassKey(i);
+    if (i < count) {
+      prefs.putString(ssidKey.c_str(), ssids[i]);
+      prefs.putString(passKey.c_str(), passes[i]);
+    } else {
+      prefs.remove(ssidKey.c_str());
+      prefs.remove(passKey.c_str());
+    }
+  }
+  prefs.end();
+}
+
+void forgetAllWifiCredentials() {
+  prefs.begin("net", false);
+  prefs.remove("ssid");
+  prefs.remove("pass");
+  for (int i = 0; i < kMaxWifiHistoryNetworks; ++i) {
+    String ssidKey = wifiHistorySsidKey(i);
+    String passKey = wifiHistoryPassKey(i);
+    prefs.remove(ssidKey.c_str());
+    prefs.remove(passKey.c_str());
+  }
+  prefs.end();
 }
 
 void loadAudioPreferences() {
@@ -2183,6 +2278,14 @@ void scanWifiList() {
   WiFi.scanDelete();
 }
 
+bool scannedNetworkHasSsid(const String &ssid) {
+  if (ssid.length() == 0) return false;
+  for (int i = 0; i < scannedNetworkCount; ++i) {
+    if (scannedSsids[i] == ssid) return true;
+  }
+  return false;
+}
+
 String pageStart(const String &title) {
   String html = String(F("<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>"
                          "<meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -2210,13 +2313,6 @@ void sendWifiPage() {
   if (savedSsid.length() == 0 && wifiReady && WiFi.status() == WL_CONNECTED) {
     savedSsid = WiFi.SSID();
   }
-  bool savedInScan = false;
-  for (int i = 0; i < scannedNetworkCount; ++i) {
-    if (scannedSsids[i] == savedSsid) {
-      savedInScan = true;
-      break;
-    }
-  }
 
   String html = pageStart(F("连接 Wi-Fi"));
   html += F("<section class='panel'><p class='meta'>HStudio ESP32-C3</p><h1>连接局域网 Wi-Fi</h1>");
@@ -2240,7 +2336,6 @@ void sendWifiPage() {
       html += F("<option value='");
       html += escapeHtml(scannedSsids[i]);
       html += F("'");
-      if (scannedSsids[i] == savedSsid) html += F(" selected");
       html += F(">");
       html += escapeHtml(scannedSsids[i]);
       html += F(" · ");
@@ -2249,15 +2344,11 @@ void sendWifiPage() {
       if (!scannedEncrypted[i]) html += F(" · 开放");
       html += F("</option>");
     }
-    html += F("<option value='__manual__'>手动输入 SSID</option></select></div>");
-    html += F("<div class='field'><span class='label'>手动 SSID</span><input name='ssid_manual' autocomplete='off' value='");
-    if (!savedInScan) html += escapeHtml(savedSsid);
-    html += F("'></div>");
+    html += F("</select></div>");
+    html += F("<div class='field'><span class='label'>手动 SSID</span><input name='ssid_manual' autocomplete='off' value=''></div>");
   } else {
     html += F("<p class='hint'>没有扫到附近 Wi-Fi，请手动输入 SSID。</p>");
-    html += F("<div class='field'><span class='label'>SSID</span><input name='ssid' autocomplete='off' required value='");
-    html += escapeHtml(savedSsid);
-    html += F("'></div>");
+    html += F("<div class='field'><span class='label'>SSID</span><input name='ssid' autocomplete='off' required value=''></div>");
   }
   html += F("<div class='field'><span class='label'>密码</span><input name='pass' type='password' autocomplete='current-password' placeholder='开放网络可留空'></div>");
   html += F("<div class='btn-row'><button class='btn primary' type='submit'>保存并连接</button></div>");
@@ -2268,7 +2359,8 @@ void sendWifiPage() {
   html += F("/</p></form></section>");
 
   if (wifiReady || savedSsid.length() > 0) {
-    html += F("<form method='post' action='/clear' class='card'><button class='btn primary' type='submit'>清除 Wi-Fi 配置并回到热点模式</button></form>");
+    html += F("<form method='post' action='/clear' class='card'><button class='btn primary' type='submit'>重新配置 Wi-Fi</button></form>");
+    html += F("<form method='post' action='/wifi/forget' class='card'><button class='btn warn' type='submit'>清除所有 Wi-Fi 历史</button></form>");
   }
   html += pageEnd();
   server.send(200, F("text/html; charset=utf-8"), html);
@@ -2394,7 +2486,8 @@ void sendStatusPage() {
   }
   html += F("</section>");
 
-  html += F("<form method='post' action='/clear' class='card'><button class='btn primary' type='submit'>清除 Wi-Fi 配置并回到热点模式</button></form>");
+  html += F("<form method='post' action='/clear' class='card'><button class='btn primary' type='submit'>重新配置 Wi-Fi</button></form>");
+  html += F("<form method='post' action='/wifi/forget' class='card'><button class='btn warn' type='submit'>清除所有 Wi-Fi 历史</button></form>");
   html += pageEnd();
   server.send(200, F("text/html; charset=utf-8"), html);
 }
@@ -5128,7 +5221,7 @@ void sendConnectFailedPage(const String &ssid) {
   html += F("<p class='lead bad'>没有连上 ");
   html += escapeHtml(ssid);
   html += F("。请检查 SSID 和密码后重试。</p>");
-  html += F("<div class='btn-row'><a class='btn primary' href='/wifi'>返回配网</a><a class='btn primary' href='/clear'>清除配置</a></div></section>");
+  html += F("<div class='btn-row'><a class='btn primary' href='/wifi'>返回配网</a><a class='btn primary' href='/clear'>重新配置</a></div></section>");
   html += pageEnd();
   server.send(200, F("text/html; charset=utf-8"), html);
 }
@@ -5176,17 +5269,12 @@ void saveWifi() {
     return;
   }
 
-  String savedSsid = prefString("ssid");
-  String savedPass = prefString("pass");
-  if (pass.length() == 0 && ssid == savedSsid) {
-    pass = savedPass;
+  if (pass.length() == 0) {
+    savedWifiPasswordForSsid(ssid, pass);
   }
 
   if (connectWifiCredentials(ssid, pass, WIFI_AP_STA)) {
-    prefs.begin("net", false);
-    prefs.putString("ssid", ssid);
-    prefs.putString("pass", pass);
-    prefs.end();
+    rememberWifiCredential(ssid, pass);
     sendConnectSuccessPage(ssid, WiFi.localIP());
     restartPending = true;
     restartAtMs = millis() + kProvisionRestartDelayMs;
@@ -5196,28 +5284,58 @@ void saveWifi() {
   sendConnectFailedPage(ssid);
 }
 
+void startSetupAp(bool refreshScan);
+
 void clearWifi() {
-  prefs.begin("net", false);
-  prefs.remove("ssid");
-  prefs.remove("pass");
-  prefs.end();
-  WiFi.disconnect(true, true);
-  setOledStatus(OledMode::Think, F("WIFI"), F("CLEAR"), 40);
+  setOledStatus(OledMode::Think, F("WIFI"), F("SETUP"), 40);
   server.send(200, F("text/html; charset=utf-8"),
-              F("<!doctype html><meta charset='utf-8'><p>已清除，设备正在重启并回到热点模式...</p>"));
-  delay(700);
-  ESP.restart();
+              F("<!doctype html><meta charset='utf-8'><p>设备正在进入配网模式，请连接 HStudio-WIFI 热点。</p>"));
+  delay(300);
+  startSetupAp(true);
+}
+
+void forgetWifiHistory() {
+  forgetAllWifiCredentials();
+  setOledStatus(OledMode::Think, F("WIFI"), F("FORGET"), 40);
+  server.send(200, F("text/html; charset=utf-8"),
+              F("<!doctype html><meta charset='utf-8'><p>已清除所有 Wi-Fi 历史，设备正在进入配网模式...</p>"));
+  delay(300);
+  startSetupAp(true);
 }
 
 bool connectSavedWifi() {
-  String ssid = prefString("ssid");
-  String pass = prefString("pass");
-  ssid.trim();
-  if (ssid.length() == 0) return false;
-  return connectWifiCredentials(ssid, pass, WIFI_STA);
+  scanWifiList();
+
+  String ssids[kMaxWifiHistoryNetworks];
+  String passes[kMaxWifiHistoryNetworks];
+  int count = 0;
+  loadWifiCredentials(ssids, passes, count);
+  if (count == 0) {
+    Serial.println(F("No saved WiFi credentials, entering setup AP"));
+    esp_rom_printf("No saved WiFi credentials, entering setup AP\n");
+    return false;
+  }
+
+  bool matched = false;
+  for (int i = 0; i < count; ++i) {
+    if (!scannedNetworkHasSsid(ssids[i])) continue;
+    matched = true;
+    Serial.printf("Saved WiFi found in scan ssid=%s\n", ssids[i].c_str());
+    esp_rom_printf("Saved WiFi found in scan ssid=%s\n", ssids[i].c_str());
+    if (connectWifiCredentials(ssids[i], passes[i], WIFI_STA)) {
+      rememberWifiCredential(ssids[i], passes[i]);
+      return true;
+    }
+  }
+
+  if (!matched) {
+    Serial.println(F("No saved WiFi SSID found in scan, entering setup AP"));
+    esp_rom_printf("No saved WiFi SSID found in scan, entering setup AP\n");
+  }
+  return false;
 }
 
-void startSetupAp() {
+void startSetupAp(bool refreshScan = true) {
   setOledStatus(OledMode::Think, F("SETUP"), F("AP START"), 35);
   if (lanUdpReady) {
     lanUdp.stop();
@@ -5225,7 +5343,7 @@ void startSetupAp() {
   }
   lanDeviceCount = 0;
   lastLanDiscoveryAtMs = 0;
-  scanWifiList();
+  if (refreshScan) scanWifiList();
   WiFi.persistent(false);
   WiFi.disconnect(true, true);
   WiFi.softAPdisconnect(true);
@@ -5247,7 +5365,7 @@ void startSetupAp() {
 
 void handleRoot() {
   if (wifiReady && WiFi.status() == WL_CONNECTED) {
-    sendStatusPage();
+    scanAndSendStatusPage();
     return;
   }
   sendWifiPage();
@@ -5362,6 +5480,7 @@ void setupRoutes() {
   server.on(F("/ota/check"), HTTP_POST, handleOtaCheck);
   server.on(F("/wifi"), HTTP_GET, sendWifiPage);
   server.on(F("/wifi"), HTTP_POST, saveWifi);
+  server.on(F("/wifi/forget"), HTTP_POST, forgetWifiHistory);
   server.on(F("/clear"), HTTP_GET, clearWifi);
   server.on(F("/clear"), HTTP_POST, clearWifi);
   server.on(F("/health"), HTTP_GET, handleHealth);
@@ -5400,8 +5519,10 @@ void setup() {
   if (selectedProfile.length() == 0) selectedProfile = prefs.getString("current_profile", "");
   prefs.end();
   setOledStatus(OledMode::Boot, F("BOOT"), F("WIFI ONLY"), 15);
-  if (kForceSetupAp || !connectSavedWifi()) {
+  if (kForceSetupAp) {
     startSetupAp();
+  } else if (!connectSavedWifi()) {
+    startSetupAp(false);
   }
   setupRoutes();
   if (wifiReady && !setupApMode) {
@@ -5437,7 +5558,9 @@ void loop() {
       setOledStatus(OledMode::Error, F("WIFI"), F("LOST"), 0);
       delay(500);
       wifiDisconnectedSinceMs = 0;
-      startSetupAp();
+      if (!connectSavedWifi()) {
+        startSetupAp(false);
+      }
     }
   } else if (wifiReady) {
     wifiDisconnectedSinceMs = 0;
