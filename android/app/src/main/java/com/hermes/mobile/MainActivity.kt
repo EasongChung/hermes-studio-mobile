@@ -159,16 +159,16 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        webView.onPause()
+        if (::webView.isInitialized) webView.onPause()
     }
 
     override fun onResume() {
         super.onResume()
-        webView.onResume()
+        if (::webView.isInitialized) webView.onResume()
     }
 
     override fun onDestroy() {
-        webView.destroy()
+        if (::webView.isInitialized) webView.destroy()
         super.onDestroy()
     }
 }
