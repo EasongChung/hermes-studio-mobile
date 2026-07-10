@@ -115,11 +115,11 @@ summary:focus-visible {
   align-items: center;
   gap: 24px;
   width: min(100%, var(--max-width));
-  min-height: 58px;
+  min-height: 64px;
   margin: 0 auto;
-  padding: 7px 8px 7px 20px;
+  padding: 8px 24px;
   border: 1px solid rgba(212, 215, 209, 0.72);
-  border-radius: 999px;
+  border-radius: var(--radius);
   background: rgba(255, 255, 255, 0.82);
   box-shadow: 0 12px 40px rgba(49, 56, 49, 0.05);
   backdrop-filter: blur(15px);
@@ -130,11 +130,19 @@ summary:focus-visible {
   align-items: center;
   gap: 11px;
   width: fit-content;
+  height: 40px;
   font-family: "DIN Condensed", "Avenir Next Condensed", "Avenir Next", sans-serif;
   font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.08em;
   line-height: 1;
+}
+
+.brand > span:last-child {
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+  transform: translateY(2px);
 }
 
 .brand i {
@@ -143,6 +151,7 @@ summary:focus-visible {
 }
 
 .brand-mark {
+  flex: 0 0 auto;
   width: 17px;
   height: 17px;
   border: 2px solid var(--ink);
@@ -260,9 +269,9 @@ h3 {
 
 h1 {
   max-width: 590px;
-  margin-bottom: 26px;
-  font-size: clamp(3.5rem, 5.4vw, 5.5rem);
-  line-height: 0.94;
+  margin-bottom: 30px;
+  font-size: clamp(3rem, 4.7vw, 4.6rem);
+  line-height: 1.05;
 }
 
 h1 em {
@@ -275,8 +284,33 @@ h1 em {
   max-width: 27rem;
   margin-bottom: 30px;
   color: var(--copy);
-  font-size: 17px;
+  font-size: 18px;
   line-height: 1.62;
+}
+
+.hero-purchase-intro {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  max-width: none;
+  margin-bottom: 22px;
+  color: var(--copy);
+  font-size: 16px;
+}
+
+.hero-price {
+  color: var(--ink);
+  font-family: "DIN Condensed", "Avenir Next Condensed", "Avenir Next", sans-serif;
+  font-size: 44px;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.hero-price span {
+  margin-right: 2px;
+  font-size: 20px;
+  font-weight: 600;
+  vertical-align: 4px;
 }
 
 .purchase-links {
@@ -466,9 +500,9 @@ h1 em {
 .notice-copy h2,
 .faq-heading h2,
 .purchase-copy h2 {
-  margin-bottom: 18px;
-  font-size: clamp(2.25rem, 3.6vw, 3.5rem);
-  line-height: 1.08;
+  margin-bottom: 24px;
+  font-size: clamp(2rem, 3vw, 2.875rem);
+  line-height: 1.16;
 }
 
 .section-intro p,
@@ -479,7 +513,7 @@ h1 em {
   max-width: 52ch;
   margin-bottom: 0;
   color: var(--copy);
-  font-size: 16px;
+  font-size: 17px;
 }
 
 .signal-section {
@@ -491,9 +525,11 @@ h1 em {
 }
 
 .signal-section .section-intro h2 {
-  font-size: clamp(2rem, 3vw, 2.75rem);
-  line-height: 1.14;
+  margin-bottom: 24px;
+  font-size: clamp(1.625rem, 2.2vw, 2.125rem);
+  line-height: 1.25;
   letter-spacing: -0.035em;
+  white-space: nowrap;
 }
 
 .signal-grid {
@@ -533,7 +569,7 @@ h1 em {
 .signal-item p {
   margin: 0;
   color: var(--copy);
-  font-size: 14px;
+  font-size: 15px;
 }
 
 .feature-section {
@@ -595,25 +631,35 @@ h1 em {
   max-width: 430px;
 }
 
+.feature-section--button .feature-copy {
+  max-width: 520px;
+}
+
+#button-title {
+  font-size: clamp(1.75rem, 3vw, 2.75rem);
+  white-space: nowrap;
+}
+
 .feature-kicker {
   margin-bottom: 18px;
   color: var(--teal);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.11em;
+  line-height: 1.4;
 }
 
 .feature-copy h2 {
-  margin-bottom: 22px;
-  font-size: clamp(2.4rem, 4vw, 3.65rem);
-  line-height: 1.04;
+  margin-bottom: 24px;
+  font-size: clamp(2.1rem, 3.4vw, 3rem);
+  line-height: 1.14;
 }
 
 .feature-copy p:last-child {
   max-width: 42ch;
   margin: 0;
   color: var(--copy);
-  font-size: 16px;
+  font-size: 17px;
 }
 
 .colors-section {
@@ -686,15 +732,12 @@ h1 em {
 
 .connection-layout {
   display: grid;
-  grid-template-columns: minmax(300px, 0.72fr) minmax(0, 1.28fr);
-  align-items: start;
-  gap: clamp(54px, 8vw, 120px);
+  grid-template-columns: minmax(0, 1fr);
+  gap: 48px;
 }
 
 .connection-heading {
-  position: sticky;
-  top: 116px;
-  max-width: 470px;
+  max-width: 920px;
 }
 
 .connection-kicker {
@@ -707,8 +750,10 @@ h1 em {
 }
 
 .connection-heading h2 {
-  font-size: clamp(2.35rem, 3.6vw, 3.25rem);
-  line-height: 1.06;
+  margin: 16px 0 28px;
+  font-size: clamp(1.9rem, 3vw, 2.625rem);
+  line-height: 1.16;
+  white-space: nowrap;
 }
 
 .connection-facts {
@@ -717,7 +762,7 @@ h1 em {
   gap: 9px 18px;
   margin-top: 28px;
   color: var(--copy);
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .connection-facts span,
@@ -770,7 +815,7 @@ h1 em {
   padding: 0 20px;
   border-bottom: 1px solid var(--line);
   font-family: "SF Mono", "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-size: 12px;
   letter-spacing: 0.06em;
 }
 
@@ -810,18 +855,18 @@ h1 em {
   margin-bottom: 14px;
   color: var(--quiet);
   font-family: "SF Mono", "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-size: 11px;
   letter-spacing: 0.08em;
 }
 
 .system-node strong {
-  font-size: 18px;
+  font-size: 20px;
   letter-spacing: -0.03em;
 }
 
 .system-node small {
   color: var(--quiet);
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1.4;
 }
 
@@ -898,7 +943,7 @@ h1 em {
 .transport-name {
   color: var(--ink);
   font-family: "SF Mono", "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.03em;
 }
@@ -909,7 +954,7 @@ h1 em {
   align-items: center;
   gap: 8px;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -944,7 +989,7 @@ h1 em {
 
 .system-transport > small {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .connection-steps {
@@ -972,16 +1017,16 @@ h1 em {
 .connection-steps span {
   color: var(--teal);
   font-family: "SF Mono", "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .connection-steps strong {
-  font-size: 15px;
+  font-size: 17px;
 }
 
 .connection-steps small {
   color: var(--copy);
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1.55;
 }
 
@@ -1063,7 +1108,7 @@ h1 em {
   margin: 0;
   border-top: 1px solid var(--line);
   color: var(--copy);
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .notice-list span {
@@ -1128,7 +1173,7 @@ code {
   padding: 0 48px 24px 0;
   margin: 0;
   color: var(--copy);
-  font-size: 16px;
+  font-size: 17px;
 }
 
 .purchase-section {
@@ -1254,7 +1299,7 @@ code {
   }
 
   h1 {
-    font-size: clamp(3.5rem, 6vw, 5.5rem);
+    font-size: clamp(3rem, 5.3vw, 4.6rem);
   }
 
   .color-rail {
@@ -1273,8 +1318,8 @@ code {
   }
 
   .header-shell {
-    min-height: 54px;
-    padding-left: 14px;
+    min-height: 56px;
+    padding: 6px 8px 6px 14px;
   }
 
   .brand {
@@ -1380,20 +1425,34 @@ code {
 
   h1 {
     max-width: 100%;
-    margin-bottom: 20px;
-    font-size: clamp(3rem, 14vw, 4rem);
-    line-height: 0.96;
+    margin-bottom: 24px;
+    font-size: clamp(2.6rem, 12vw, 3.4rem);
+    line-height: 1.08;
   }
 
   .hero-intro {
     max-width: 31ch;
     margin-bottom: 24px;
-    font-size: 16px;
+    font-size: 17px;
+  }
+
+  .hero-purchase-intro {
+    max-width: none;
+    margin-bottom: 20px;
+    font-size: 15px;
+  }
+
+  .hero-price {
+    font-size: 40px;
   }
 
   .hero-visual {
     min-height: 360px;
     margin-top: 22px;
+  }
+
+  .orbit-device {
+    transition: opacity 360ms var(--ease);
   }
 
   .orbit-ring--outer {
@@ -1433,9 +1492,9 @@ code {
   .notice-copy h2,
   .faq-heading h2,
   .purchase-copy h2 {
-    margin-bottom: 15px;
-    font-size: clamp(2rem, 9vw, 2.5rem);
-    line-height: 1.08;
+    margin-bottom: 18px;
+    font-size: clamp(1.75rem, 7.5vw, 2.125rem);
+    line-height: 1.2;
   }
 
   .section-intro p,
@@ -1445,7 +1504,7 @@ code {
   .notice-copy p,
   .feature-copy p:last-child,
   .purchase-copy p {
-    font-size: 16px;
+    font-size: 17px;
   }
 
   .signal-grid {
@@ -1454,8 +1513,10 @@ code {
   }
 
   .signal-section .section-intro h2 {
-    font-size: clamp(1.9rem, 8vw, 2.25rem);
-    line-height: 1.16;
+    margin-bottom: 18px;
+    font-size: clamp(1.5rem, 6.5vw, 1.875rem);
+    line-height: 1.28;
+    white-space: normal;
   }
 
   .signal-item,
@@ -1506,9 +1567,17 @@ code {
   }
 
   .feature-copy h2 {
-    margin-bottom: 16px;
-    font-size: clamp(2.15rem, 9.5vw, 2.7rem);
-    line-height: 1.08;
+    margin-bottom: 18px;
+    font-size: clamp(1.875rem, 8vw, 2.25rem);
+    line-height: 1.2;
+  }
+
+  #button-title {
+    white-space: normal;
+  }
+
+  .feature-kicker {
+    font-size: 13px;
   }
 
   .color-rail {
@@ -1531,12 +1600,14 @@ code {
   }
 
   .connection-heading {
-    position: static;
     max-width: 600px;
   }
 
   .connection-heading h2 {
-    font-size: clamp(2.1rem, 9vw, 2.6rem);
+    margin: 12px 0 22px;
+    font-size: clamp(1.75rem, 7.5vw, 2.125rem);
+    line-height: 1.2;
+    white-space: normal;
   }
 
   .connection-panel-header {
@@ -1612,7 +1683,7 @@ code {
 
   .faq-list details p {
     padding-right: 28px;
-    font-size: 15px;
+    font-size: 16px;
   }
 
   .purchase-section {
