@@ -1,39 +1,56 @@
 package com.hermes.mobile
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.os.Bundle
 import android.webkit.WebView
 import androidx.appcompat.app.AppCompatActivity
-import com.hermes.mobile.client.HermesWebViewClient
 import com.hermes.mobile.client.HermesChromeClient
+import com.hermes.mobile.client.HermesWebViewClient
+import com.hermes.mobile.config.ServerConfig
 
 /**
  * MainActivity - Hermes Studio Mobile 主界面
  *
  * 职责：
- * 1. 创建并配置 WebView 实例
- * 2. 加载本地前端资源（assets/hermes/index.html）
- * 3. 提供 Server URL 注入接口给上层调用
+ * 1. 检查服务器地址是否已配置，未配置则跳转 ConfigActivity
+ * 2. 创建并配置 WebView 实例
+ * 3. 加载本地前端资源（assets/hermes/index.html）
+ * 4. 页面加载完成后注入 Server URL 到前端 localStorage
  *
  * 加载流程：
  * 首次启动 → 检查配置 → 未配置 → 跳转 ConfigActivity
- *                     → 已配置 → 加载本地前端 → 注入 Server URL
+ *                     → 已配置 → 加载本地前端 → onPageFinished 注入 URL
  */
 class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "HermesWeb"
-        // 本地前端资源路径（assets/hermes/ 目录下的入口文件）
         private const val LOCAL_FRONTEND_URL = "file:///android_asset/hermes/index.html"
     }
 
     private lateinit var webView: WebView
+    private lateinit var serverConfig: ServerConfig
+    private var serverUrl: String = ""
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
 
+        serverConfig = ServerConfig(this)
+
+        // 检查是否已配置服务器地址
+        if (!serverConfig.isConfigured()) {
+            // 未配置：跳转到配置界面
+            startActivity(Intent(this, ConfigActivity::class.java))
+            finish()
+            return
+        }
+
+        // 已配置：读取服务器 URL
+        serverUrl = serverConfig.getServerUrl() ?: ""
+
+        setContentView(R.layout.activity_main)
         webView = findViewById(R.id.webView)
         configureWebView()
         loadFrontend()
@@ -51,37 +68,28 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     private fun configureWebView() {
         val settings = webView.settings.apply {
-            // JavaScript 支持（Vue 应用必需）
             javaScriptEnabled = true
-            // DOM Storage 支持（localStorage/sessionStorage）
             domStorageEnabled = true
-            // 数据库支持（Web SQL）
             databaseEnabled = true
-            // 缓存模式：优先使用缓存，无缓存则从网络加载
             cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
-            // 文件访问权限（加载本地 assets 资源必需）
             allowFileAccess = true
             allowFileAccessFromFileURLs = true
             allowContentAccess = true
-            // 视口自适应
             useWideViewPort = true
             loadWithOverviewMode = true
-            // 混合内容：允许 HTTP 页面加载 HTTPS 资源
             mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-            // 编码
             defaultTextEncodingName = "UTF-8"
-            // 不显示缩放按钮
             builtInZoomControls = true
             displayZoomControls = false
-            // 支持多窗口（如新标签页）
             setSupportMultipleWindows(false)
-            // 聚焦时自动请求焦点
             setNeedInitialFocus(true)
         }
 
-        // 设置 WebViewClient（控制页面加载行为）
-        webView.webViewClient = HermesWebViewClient()
-        // 设置 WebChromeClient（处理 JS 弹窗、进度等）
+        // 设置 WebViewClient，传入注入回调
+        webView.webViewClient = HermesWebViewClient { injectedUrl ->
+            // 页面加载完成后，注入 Server URL 到前端 localStorage
+            injectServerUrl(injectedUrl)
+        }
         webView.webChromeClient = HermesChromeClient()
 
         // 启用 WebView 远程调试（仅在 debug 构建有效）
@@ -93,39 +101,42 @@ class MainActivity : AppCompatActivity() {
      *
      * 从 assets/hermes/ 目录加载构建好的前端 dist 文件。
      * 前端使用 Hash 路由，天然支持 file:// 协议。
-     * 加载完成后，onPageFinished 回调中注入 Server URL 配置。
      */
     private fun loadFrontend() {
         webView.loadUrl(LOCAL_FRONTEND_URL)
     }
 
     /**
-     * 注入 Server URL 到前端
+     * 注入 Server URL 到前端 localStorage
      *
      * 在 onPageFinished 回调中执行 JavaScript，将 Server URL
      * 写入 localStorage。前端通过 api/client.ts 中的 getBaseUrl()
      * 读取 localStorage.getItem('hermes_server_url') 获取地址。
      *
-     * @param serverUrl HTTP 服务器地址（如 http://192.168.1.100:8648）
+     * 注入内容：
+     * - hermes_server_url: HTTP 基础地址（API 请求用）
+     * - hermes_ws_url: WebSocket 地址（socket.io 连接用，HTTP URL 派生）
+     * - hermes_is_mobile: 标记移动端环境
+     *
+     * @param url 要注入的服务器 HTTP 地址
      */
-    fun injectServerUrl(serverUrl: String) {
-        // 清理末尾的斜杠
-        val normalizedUrl = serverUrl.trimEnd('/')
-
+    private fun injectServerUrl(url: String) {
+        val normalizedUrl = url.trimEnd('/')
         // 从 HTTP URL 推导 WebSocket URL（http→ws，https→wss）
-        val wsUrl = normalizedUrl.replace("http://", "ws://").replace("https://", "wss://")
+        val wsUrl = normalizedUrl
+            .replace("http://", "ws://")
+            .replace("https://", "wss://")
 
-        // 注入 JS 到 WebView
-        // 使用 localStorage 存储，前端自动读取
         val js = """
             (function() {
-                // 设置 Server URL（HTTP API 基地址）
-                localStorage.setItem('hermes_server_url', '$normalizedUrl');
-                // 设置 WebSocket URL（供 socket.io 连接使用）
-                localStorage.setItem('hermes_ws_url', '$wsUrl');
-                // 标记为 Mobile APP 环境
-                localStorage.setItem('hermes_is_mobile', 'true');
-                console.log('[HermesMobile] Server URL injected:', '$normalizedUrl');
+                try {
+                    localStorage.setItem('hermes_server_url', '$normalizedUrl');
+                    localStorage.setItem('hermes_ws_url', '$wsUrl');
+                    localStorage.setItem('hermes_is_mobile', 'true');
+                    console.log('[HermesMobile] Server URL injected:', '$normalizedUrl');
+                } catch(e) {
+                    console.error('[HermesMobile] Injection failed:', e);
+                }
             })();
         """.trimIndent()
 
@@ -146,28 +157,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * 生命周期：页面暂停
-     * 暂停 WebView 的 JS 执行和定时器，节省资源
-     */
     override fun onPause() {
         super.onPause()
         webView.onPause()
     }
 
-    /**
-     * 生命周期：页面恢复
-     * 恢复 WebView 的 JS 执行
-     */
     override fun onResume() {
         super.onResume()
         webView.onResume()
     }
 
-    /**
-     * 生命周期：销毁
-     * 清理 WebView 资源防止内存泄漏
-     */
     override fun onDestroy() {
         webView.destroy()
         super.onDestroy()
