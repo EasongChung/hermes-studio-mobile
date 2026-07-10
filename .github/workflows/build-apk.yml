@@ -69,16 +69,25 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      # Step 8: 使用 Gradle 官方 Action 设置 Gradle（自动处理 wrapper、JDK 发现和缓存）
+      # Step 8: 使用 Gradle 官方 Action 设置 Gradle
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          # AGP 8.2.2 需要 Gradle 8.x，指定 8.5 版本
+          gradle-version: "8.5"
 
-      # Step 9: 构建 Release APK
-      # 切换到 android/ 目录执行 Gradle 构建
+      # Step 9: 生成 Gradle Wrapper（确保 wrapper 版本与 AGP 兼容）
+      - name: Generate Gradle Wrapper
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.5
+
+      # Step 10: 构建 Release APK
+      # 使用 wrapper 脚本确保版本一致
       - name: Build Release APK
         run: |
           cd android
-          gradle assembleRelease --no-daemon
+          ./gradlew assembleRelease --no-daemon
 
       # Step 10: 上传 APK 构建产物
       # 可从 GitHub Actions 页面的 Artifacts 下载
