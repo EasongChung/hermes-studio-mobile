@@ -14,7 +14,8 @@ android {
         // minSdk 24 = Android 7.0，覆盖绝大多数设备
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
+        // versionCode 在 CI 中自动递增（GITHUB_RUN_NUMBER），本地编译默认为 1
+        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
         versionName = "0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
