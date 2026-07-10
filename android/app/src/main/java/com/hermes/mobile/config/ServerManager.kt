@@ -58,11 +58,13 @@ class ServerManager(context: Context) {
 
     /**
      * 添加服务器
+     * @param username 登录用户名（可选）
+     * @param password 登录密码（可选）
      * @return 添加后的条目（含生成的 ID）
      */
-    fun addServer(name: String, url: String): ServerEntry {
+    fun addServer(name: String, url: String, username: String = "", password: String = ""): ServerEntry {
         val servers = getAllServers().toMutableList()
-        val entry = ServerEntry(name = name, url = url.trimEnd('/'))
+        val entry = ServerEntry(name = name, url = url.trimEnd('/'), username = username, password = password)
         servers.add(entry)
         saveAllServers(servers)
         return entry
@@ -70,12 +72,14 @@ class ServerManager(context: Context) {
 
     /**
      * 更新服务器
+     * @param username 登录用户名（可选，空字符串不覆盖）
+     * @param password 登录密码（可选，空字符串不覆盖）
      */
-    fun updateServer(id: String, name: String, url: String): Boolean {
+    fun updateServer(id: String, name: String, url: String, username: String = "", password: String = ""): Boolean {
         val servers = getAllServers().toMutableList()
         val index = servers.indexOfFirst { it.id == id }
         if (index < 0) return false
-        servers[index] = servers[index].copy(name = name, url = url.trimEnd('/'))
+        servers[index] = servers[index].copy(name = name, url = url.trimEnd('/'), username = username, password = password)
         saveAllServers(servers)
         return true
     }

@@ -30,6 +30,8 @@ class ServerEditActivity : AppCompatActivity() {
         val formTitle = findViewById<TextView>(R.id.formTitle)
         val nameInput = findViewById<EditText>(R.id.nameInput)
         val urlInput = findViewById<EditText>(R.id.urlInput)
+        val usernameInput = findViewById<EditText>(R.id.usernameInput)
+        val passwordInput = findViewById<EditText>(R.id.passwordInput)
         val errorText = findViewById<TextView>(R.id.errorText)
         val saveButton = findViewById<Button>(R.id.saveButton)
         val deleteButton = findViewById<Button>(R.id.deleteButton)
@@ -43,6 +45,8 @@ class ServerEditActivity : AppCompatActivity() {
             nameInput.setText(intent.getStringExtra("server_name") ?: "")
             urlInput.setText(intent.getStringExtra("server_url") ?: "http://")
             urlInput.setSelection(urlInput.text?.length ?: 0)
+            usernameInput.setText(intent.getStringExtra("server_username") ?: "")
+            passwordInput.setText(intent.getStringExtra("server_password") ?: "")
             saveButton.text = "保存修改"
             deleteButton.visibility = android.view.View.VISIBLE
         } else {
@@ -54,6 +58,8 @@ class ServerEditActivity : AppCompatActivity() {
         saveButton.setOnClickListener {
             val name = nameInput.text.toString().trim()
             val url = urlInput.text.toString().trim()
+            val username = usernameInput.text.toString().trim()
+            val password = passwordInput.text.toString().trim()
 
             // 校验名称
             if (name.isEmpty()) {
@@ -75,11 +81,11 @@ class ServerEditActivity : AppCompatActivity() {
 
             if (editServerId != null) {
                 // 更新
-                serverManager.updateServer(editServerId!!, name, normalizedUrl)
+                serverManager.updateServer(editServerId!!, name, normalizedUrl, username, password)
                 Toast.makeText(this, "服务器已更新", Toast.LENGTH_SHORT).show()
             } else {
                 // 添加
-                val entry = serverManager.addServer(name, normalizedUrl)
+                val entry = serverManager.addServer(name, normalizedUrl, username, password)
                 // 新添加的自动设为当前选中
                 serverManager.setActiveServerId(entry.id)
                 Toast.makeText(this, "服务器已添加", Toast.LENGTH_SHORT).show()

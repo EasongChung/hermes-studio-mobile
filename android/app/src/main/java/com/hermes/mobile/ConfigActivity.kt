@@ -70,6 +70,8 @@ class ConfigActivity : AppCompatActivity() {
             if (server != null) {
                 val intent = Intent(this, MainActivity::class.java)
                 intent.putExtra("server_url", server.url)
+                intent.putExtra("server_username", server.username)
+                intent.putExtra("server_password", server.password)
                 intent.flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
                 startActivity(intent)
                 finish()
@@ -95,6 +97,8 @@ class ConfigActivity : AppCompatActivity() {
         intent.putExtra("server_id", server.id)
         intent.putExtra("server_name", server.name)
         intent.putExtra("server_url", server.url)
+        intent.putExtra("server_username", server.username)
+        intent.putExtra("server_password", server.password)
         startActivityForResult(intent, REQUEST_EDIT_SERVER)
     }
 
