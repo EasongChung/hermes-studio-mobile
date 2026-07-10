@@ -74,6 +74,7 @@ class MainActivity : AppCompatActivity() {
             cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
             allowFileAccess = true
             allowFileAccessFromFileURLs = true
+            allowUniversalAccessFromFileURLs = true
             allowContentAccess = true
             useWideViewPort = true
             loadWithOverviewMode = true
