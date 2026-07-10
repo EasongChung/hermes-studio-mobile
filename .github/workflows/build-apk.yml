@@ -82,25 +82,23 @@ jobs:
           cd android
           gradle wrapper --gradle-version 8.5
 
-      # Step 10: 构建 Release APK
-      # 使用 wrapper 脚本确保版本一致
-      - name: Build Release APK
+      # Step 10: 构建 Release + Debug APK
+      # Debug APK 自动使用 Android 调试签名，可直接安装
+      - name: Build APKs
         run: |
           cd android
-          ./gradlew assembleRelease --no-daemon
+          ./gradlew assembleRelease assembleDebug --no-daemon
 
-      # Step 10: 上传 APK 构建产物
-      # 可从 GitHub Actions 页面的 Artifacts 下载
-      - name: Upload APK artifact
+      # Step 11: 上传 Release APK（未签名，需配置签名才能安装）
+      - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
           name: hermes-studio-mobile-release
           path: android/app/build/outputs/apk/release/*.apk
-          # 保留 7 天
           retention-days: 7
 
-      # Step 11: 上传 Debug APK（方便调试）
-      - name: Upload Debug APK artifact
+      # Step 12: 上传 Debug APK（已签名，可直接安装）
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: hermes-studio-mobile-debug
