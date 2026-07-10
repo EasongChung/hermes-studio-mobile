@@ -89,18 +89,43 @@ jobs:
           cd android
           ./gradlew assembleRelease assembleDebug --no-daemon
 
-      # Step 11: 上传 Release APK（未签名，需配置签名才能安装）
+      # Step 11: 重命名 APK 文件，增加编译时间戳和版本号，便于区分不同构建
+      - name: Rename APK files with build timestamp
+        run: |
+          TIMESTAMP=$(date -u +'%Y%m%d_%H%M')
+          VERSION="v0.1.0"
+          echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
+          echo "BUILD_VERSION=${VERSION}" >> $GITHUB_ENV
+
+          # Release APK
+          RELEASE_DIR=android/app/build/outputs/apk/release
+          if [ -f "$RELEASE_DIR/app-release-unsigned.apk" ]; then
+            mv "$RELEASE_DIR/app-release-unsigned.apk" \
+               "$RELEASE_DIR/HermesStudioMobile-${VERSION}-r${GITHUB_RUN_NUMBER}-${TIMESTAMP}-release-unsigned.apk"
+          fi
+
+          # Debug APK
+          DEBUG_DIR=android/app/build/outputs/apk/debug
+          if [ -f "$DEBUG_DIR/app-debug.apk" ]; then
+            mv "$DEBUG_DIR/app-debug.apk" \
+               "$DEBUG_DIR/HermesStudioMobile-${VERSION}-r${GITHUB_RUN_NUMBER}-${TIMESTAMP}-debug.apk"
+          fi
+
+          echo "=== Renamed files ==="
+          ls -la $RELEASE_DIR/ $DEBUG_DIR/
+
+      # Step 12: 上传 Release APK（未签名，需配置签名才能安装）
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-studio-mobile-release
+          name: HermesStudioMobile-${{ env.BUILD_VERSION }}-r${{ github.run_number }}-release
           path: android/app/build/outputs/apk/release/*.apk
           retention-days: 7
 
-      # Step 12: 上传 Debug APK（已签名，可直接安装）
+      # Step 13: 上传 Debug APK（已签名，可直接安装）
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-studio-mobile-debug
+          name: HermesStudioMobile-${{ env.BUILD_VERSION }}-r${{ github.run_number }}-debug
           path: android/app/build/outputs/apk/debug/*.apk
           retention-days: 7
