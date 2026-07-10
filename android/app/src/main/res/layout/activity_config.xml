@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- activity_config.xml - 服务器配置界面
+     用户在此输入 Hermes Server 的地址，包括 IP/域名和端口号 -->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#F5F5F5">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:layout_marginTop="48dp">
+
+        <!-- 标题 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="连接服务器"
+            android:textSize="24sp"
+            android:textColor="#1A1A1A"
+            android:textStyle="bold"
+            android:layout_marginBottom="8dp" />
+
+        <!-- 说明文字 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="请输入 Hermes Studio 服务器的地址"
+            android:textSize="14sp"
+            android:textColor="#666666"
+            android:layout_marginBottom="24dp" />
+
+        <!-- 服务器地址输入框 -->
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="服务器地址"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/urlInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="textUri"
+                android:text="http://"
+                android:autofillHints="url" />
+
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <!-- 错误提示 -->
+        <TextView
+            android:id="@+id/errorText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#D32F2F"
+            android:textSize="13sp"
+            android:visibility="gone"
+            android:layout_marginTop="8dp" />
+
+        <!-- 使用提示 -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="提示：通常为 http://你的IP:端口号（如 http://192.168.1.100:8648）"
+            android:textSize="12sp"
+            android:textColor="#999999"
+            android:layout_marginTop="16dp"
+            android:layout_marginBottom="32dp" />
+
+        <!-- 保存按钮 -->
+        <Button
+            android:id="@+id/saveButton"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="保存并连接"
+            android:textSize="16sp"
+            android:backgroundTint="#2196F3"
+            android:textColor="#FFFFFF" />
+
+    </LinearLayout>
+
+</ScrollView>
