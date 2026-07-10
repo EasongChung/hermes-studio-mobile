@@ -40,9 +40,15 @@
             </intent-filter>
         </activity>
 
-        <!-- 服务器配置界面 -->
+        <!-- 服务器配置界面（服务器列表管理） -->
         <activity
             android:name=".ConfigActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- 添加/编辑服务器界面 -->
+        <activity
+            android:name=".ServerEditActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
     </application>
