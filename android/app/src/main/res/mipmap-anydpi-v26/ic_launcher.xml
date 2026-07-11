@@ -2,8 +2,6 @@
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- 背景色：Hermes 深紫色主题 -->
     <background android:drawable="@drawable/ic_launcher_background" />
-    <!-- 前景：小女孩头像（缩放 80% 以适配安全区域） -->
-    <foreground>
-        <inset android:drawable="@mipmap/ic_launcher" android:inset="20%" />
-    </foreground>
+    <!-- 前景：小女孩头像（drawable PNG 直接引用，避免 mipmap 循环引用） -->
+    <foreground android:drawable="@drawable/ic_launcher_foreground_image" />
 </adaptive-icon>
