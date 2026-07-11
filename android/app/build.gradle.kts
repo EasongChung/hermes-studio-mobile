@@ -26,19 +26,19 @@ android {
     // 如果环境变量缺失，则跳过签名（仅构建 unsigned APK）
     val keystorePath = System.getenv("KEYSTORE_PATH") ?: ""
     val keystorePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
-    val keyAlias = System.getenv("KEY_ALIAS") ?: ""
-    val keyPassword = System.getenv("KEY_PASSWORD") ?: ""
+    val envKeyAlias = System.getenv("KEY_ALIAS") ?: ""
+    val envKeyPassword = System.getenv("KEY_PASSWORD") ?: ""
 
     val hasSigningConfig = keystorePath.isNotBlank() && keystorePassword.isNotBlank() &&
-            keyAlias.isNotBlank() && keyPassword.isNotBlank()
+            envKeyAlias.isNotBlank() && envKeyPassword.isNotBlank()
 
     signingConfigs {
         create("release") {
             if (hasSigningConfig) {
                 storeFile = file(keystorePath)
                 storePassword = keystorePassword
-                keyAlias = keyAlias
-                keyPassword = keyPassword
+                keyAlias = envKeyAlias
+                keyPassword = envKeyPassword
             }
         }
     }
