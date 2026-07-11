@@ -23,6 +23,10 @@
 
 name: Build Hermes Studio Mobile APK
 
+# 设置工作流权限：contents:write 用于创建 Release
+permissions:
+  contents: write
+
 on:
   push:
     branches: [ "main" ]
