@@ -32,6 +32,7 @@
             android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|fontScale|mcc|mnc|touchscreen|navigation"
             android:hardwareAccelerated="true"
+            android:theme="@style/Theme.HermesStudioMobile.Splash"
             android:windowSoftInputMode="adjustResize">
             <!-- LAUNCHER：桌面图标入口 -->
             <intent-filter>

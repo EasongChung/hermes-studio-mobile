@@ -142,7 +142,7 @@ jobs:
       - name: Rename APK files with build timestamp
         run: |
           TIMESTAMP=$(date -u +'%Y%m%d_%H%M')
-          VERSION="v0.1.0"
+          VERSION="v0.1.1"
           echo "TIMESTAMP=${TIMESTAMP}" >> $GITHUB_ENV
           echo "BUILD_VERSION=${VERSION}" >> $GITHUB_ENV
           echo "APK_TAG=r${GITHUB_RUN_NUMBER}" >> $GITHUB_ENV
@@ -192,10 +192,10 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.0-r${{ github.run_number }}
-          name: Hermes Studio Mobile v0.1.0 (Build r${{ github.run_number }})
+          tag_name: ${{ env.BUILD_VERSION }}-r${{ github.run_number }}
+          name: Hermes Studio Mobile ${{ env.BUILD_VERSION }} (Build r${{ github.run_number }})
           body: |
-            ## Hermes Studio Mobile v0.1.0 — Build r${{ github.run_number }}
+            ## Hermes Studio Mobile ${{ env.BUILD_VERSION }} — Build r${{ github.run_number }}
 
             **自动构建于** ${{ env.TIMESTAMP || github.run_id }}
 
