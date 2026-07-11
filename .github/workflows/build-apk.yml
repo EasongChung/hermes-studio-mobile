@@ -4,12 +4,22 @@
 #
 # 执行流程：
 # 1. 检出代码
-# 2. 安装 Node.js → npm install → npm run build（构建前端 dist）
+# 2. 安装 Node.js → npm ci → npm run build（构建前端 dist）
 # 3. 复制 dist/client 到 android/app/src/main/assets/hermes/
-# 4. 安装 JDK 17 + Android SDK → ./gradlew assembleRelease（构建 APK）
-# 5. 上传 APK 构建产物
+# 4. 安装 JDK 17 → 生成/使用 keystore → 构建签名 APK
+# 5. 生成 Release 并上传 APK
+# 6. 首次构建时导出 keystore 供后续使用
 #
-# 注意：本地不安装任何开发环境，所有编译依赖由 GitHub Actions 托管 Runner 提供
+# 签名说明：
+# - 首次运行：自动生成 keystore，签署 APK，keystore 作为 artifact 上传备存
+# - 后续运行：在 GitHub Secrets 配置 KEYSTORE_BASE64 后可复用同一签名
+#   （如果不配置，每次构建会生成新 keystore，导致旧版 APP 无法覆盖安装）
+# - GitHub Secrets 配置路径：仓库 → Settings → Secrets and variables → Actions
+#   需要以下 4 个 Secret：
+#   - KEYSTORE_BASE64: 首次下载的 keystore.jks 用 base64 -w0 keystore.jks 编码后的字符串
+#   - KEYSTORE_PASSWORD: keystore 密码（与首次生成时一致）
+#   - KEY_ALIAS: 密钥别名（与首次生成时一致）
+#   - KEY_PASSWORD: 密钥密码（与首次生成时一致）
 
 name: Build Hermes Studio Mobile APK
 
@@ -43,10 +53,8 @@ jobs:
         run: npm ci
 
       # Step 4: 构建前端 dist
-      # 关键：vite.config.ts 中 base 已设为 "./"，确保 file:// 协议下资源路径正确
       - name: Build frontend dist
         run: npm run build
-        # 构建完成后 dist/client/ 目录包含 index.html + assets/
 
       # Step 5: 复制前端资源到 Android assets 目录
       - name: Copy frontend dist to Android assets
@@ -69,36 +77,86 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      # Step 8: 使用 Gradle 官方 Action 设置 Gradle
+      # Step 8: 配置签名密钥
+      # 如果 KEYSTORE_BASE64 已配置（GitHub Secrets），直接解码使用
+      # 否则首次运行，自动生成 keystore
+      - name: Configure signing keystore
+        run: |
+          mkdir -p $HOME/.android
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            # 从 Secret 还原 keystore
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $HOME/.android/hermes-keystore.jks
+            echo "KEYSTORE_PATH=$HOME/.android/hermes-keystore.jks" >> $GITHUB_ENV
+            echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> $GITHUB_ENV
+            echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
+            echo "Keystore restored from secrets"
+          else
+            # 首次运行：生成新 keystore
+            # 密码和别名写入环境变量，同时保存到文件供导出
+            KEYSTORE_PWD="HermesStudio$(date +%s)"
+            KEY_PWD="HermesStudio$(date +%s)"
+            KEY_ALIAS="hermes-studio-mobile"
+            echo "KEYSTORE_PASSWORD=${KEYSTORE_PWD}" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=${KEY_PWD}" >> $GITHUB_ENV
+            echo "KEY_ALIAS=${KEY_ALIAS}" >> $GITHUB_ENV
+            echo "KEYSTORE_PATH=$HOME/.android/hermes-keystore.jks" >> $GITHUB_ENV
+            # 保存密码到文件，供打包导出
+            echo "KEYSTORE_PASSWORD=${KEYSTORE_PWD}" > $HOME/.android/keystore-credentials.txt
+            echo "KEY_PASSWORD=${KEY_PWD}" >> $HOME/.android/keystore-credentials.txt
+            echo "KEY_ALIAS=${KEY_ALIAS}" >> $HOME/.android/keystore-credentials.txt
+            # 生成 keystore（有效期 30 年）
+            keytool -genkey -v \
+              -keystore $HOME/.android/hermes-keystore.jks \
+              -alias ${KEY_ALIAS} \
+              -storepass ${KEYSTORE_PWD} \
+              -keypass ${KEY_PWD} \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10950 \
+              -dname "CN=HermesStudioMobile, OU=Development, O=EasongChung, L=Unknown, ST=Unknown, C=CN"
+            echo "New keystore generated"
+          fi
+
+      # Step 9: 使用 Gradle 官方 Action 设置 Gradle
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          # AGP 8.2.2 需要 Gradle 8.x，指定 8.5 版本
           gradle-version: "8.5"
 
-      # Step 9: 生成 Gradle Wrapper（确保 wrapper 版本与 AGP 兼容）
+      # Step 10: 生成 Gradle Wrapper
       - name: Generate Gradle Wrapper
         run: |
           cd android
           gradle wrapper --gradle-version 8.5
 
-      # Step 10: 构建 Release + Debug APK
-      # Debug APK 自动使用 Android 调试签名，可直接安装
+      # Step 11: 构建 Release + Debug APK
       - name: Build APKs
         run: |
           cd android
           ./gradlew assembleRelease assembleDebug --no-daemon
+        env:
+          KEYSTORE_PATH: ${{ env.KEYSTORE_PATH }}
+          KEYSTORE_PASSWORD: ${{ env.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ env.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ env.KEY_PASSWORD }}
 
-      # Step 11: 重命名 APK 文件，增加编译时间戳和版本号，便于区分不同构建
+      # Step 12: 重命名 APK 文件
       - name: Rename APK files with build timestamp
         run: |
           TIMESTAMP=$(date -u +'%Y%m%d_%H%M')
           VERSION="v0.1.0"
-          echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
+          echo "TIMESTAMP=${TIMESTAMP}" >> $GITHUB_ENV
           echo "BUILD_VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "APK_TAG=r${GITHUB_RUN_NUMBER}" >> $GITHUB_ENV
 
-          # Release APK
+          # Release APK（已签名的 release APK 文件名是 app-release.apk）
           RELEASE_DIR=android/app/build/outputs/apk/release
+          if [ -f "$RELEASE_DIR/app-release.apk" ]; then
+            mv "$RELEASE_DIR/app-release.apk" \
+               "$RELEASE_DIR/HermesStudioMobile-${VERSION}-r${GITHUB_RUN_NUMBER}-${TIMESTAMP}-release.apk"
+          fi
+          # 也检查 unsigned 版本
           if [ -f "$RELEASE_DIR/app-release-unsigned.apk" ]; then
             mv "$RELEASE_DIR/app-release-unsigned.apk" \
                "$RELEASE_DIR/HermesStudioMobile-${VERSION}-r${GITHUB_RUN_NUMBER}-${TIMESTAMP}-release-unsigned.apk"
@@ -111,21 +169,72 @@ jobs:
                "$DEBUG_DIR/HermesStudioMobile-${VERSION}-r${GITHUB_RUN_NUMBER}-${TIMESTAMP}-debug.apk"
           fi
 
-          echo "=== Renamed files ==="
-          ls -la $RELEASE_DIR/ $DEBUG_DIR/
+          echo "=== Release APK ==="
+          ls -la $RELEASE_DIR/
+          echo "=== Debug APK ==="
+          ls -la $DEBUG_DIR/
 
-      # Step 12: 上传 Release APK（未签名，需配置签名才能安装）
-      - name: Upload Release APK
+      # Step 13: 上传 Release APK（artifact）
+      - name: Upload Release APK (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: HermesStudioMobile-${{ env.BUILD_VERSION }}-r${{ github.run_number }}-release
           path: android/app/build/outputs/apk/release/*.apk
           retention-days: 7
 
-      # Step 13: 上传 Debug APK（已签名，可直接安装）
-      - name: Upload Debug APK
+      # Step 14: 上传 Debug APK（artifact）
+      - name: Upload Debug APK (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: HermesStudioMobile-${{ env.BUILD_VERSION }}-r${{ github.run_number }}-debug
           path: android/app/build/outputs/apk/debug/*.apk
           retention-days: 7
+
+      # Step 15: 如果是 main 分支的 push，创建 GitHub Release
+      - name: Create GitHub Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.1.0-r${{ github.run_number }}
+          name: Hermes Studio Mobile v0.1.0 (Build r${{ github.run_number }})
+          body: |
+            ## Hermes Studio Mobile v0.1.0 — Build r${{ github.run_number }}
+
+            **自动构建于** ${{ env.TIMESTAMP || github.run_id }}
+
+            ### 版本说明
+            - 基于 Hermes Studio Web 前端的 Android WebView 容器
+            - 支持多服务器管理、自动登录 Token 注入
+            - 页面状态保持优化、缓存优化
+
+            ### 下载
+            - **Release APK**（已签名，可直接安装）：见下方 Assets
+            - **Debug APK**（调试版）：见下方 Assets
+
+            ### 安装说明
+            1. 下载 APK 文件到手机
+            2. 在手机文件管理器中点击 APK 文件安装
+            3. 如提示「未知来源应用」，请在设置中允许安装
+          files: |
+            android/app/build/outputs/apk/release/*.apk
+            android/app/build/outputs/apk/debug/*.apk
+          generate_release_notes: false
+          make_latest: true
+
+      # Step 16: 首次构建：导出 keystore 供用户保存
+      # 如果是从 Secrets 还原的 keystore，不重复导出
+      - name: Export keystore for first-time setup
+        if: env.KEYSTORE_PATH != '' && secrets.KEYSTORE_BASE64 == ''
+        run: |
+          # 将 keystore 和密码打包
+          cd $HOME/.android
+          tar -czf keystore-package.tar.gz hermes-keystore.jks keystore-credentials.txt 2>/dev/null || true
+
+      - name: Upload keystore package (first-time only)
+        if: env.KEYSTORE_PATH != '' && secrets.KEYSTORE_BASE64 == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-keystore-first-time
+          path: ${{ runner.home }}/.android/keystore-package.tar.gz
+          retention-days: 30
+          if-no-files-found: ignore

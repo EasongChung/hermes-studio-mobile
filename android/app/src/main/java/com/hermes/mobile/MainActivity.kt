@@ -2,6 +2,7 @@ package com.hermes.mobile
 
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.res.Configuration
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -85,6 +86,21 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(R.layout.activity_main)
         webView = findViewById(R.id.webView)
+
+        // 如果有保存的 WebView 状态，优先恢复（横竖屏切换后）
+        if (savedInstanceState != null && savedInstanceState.getBoolean("webview_has_state", false)) {
+            // 如果已有 token，直接还原 WebView 状态，避免重新加载
+            if (loginUsername.isNotBlank() && loginPassword.isNotBlank()) {
+                authToken = savedInstanceState.getString("auth_token")
+                if (authToken != null) {
+                    Log.d(TAG, "Restoring WebView state with auth token")
+                    configureWebView()
+                    webView.restoreState(savedInstanceState)
+                    return
+                }
+            }
+            // 没有 token 或还原失败，走正常加载流程
+        }
 
         // 如果在凭据，先登录获取 token，再配置 WebView 并加载页面
         if (loginUsername.isNotBlank() && loginPassword.isNotBlank()) {
@@ -170,6 +186,32 @@ class MainActivity : AppCompatActivity() {
             displayZoomControls = false
             setSupportMultipleWindows(false)
             setNeedInitialFocus(true)
+
+            // ===== 缓存优化配置 =====
+            // 设置 AppCache 最大容量为 50MB，允许缓存更大的 API 响应（如会话记录）
+            // Android 目前使用 Chromium 内核，AppCache 被自动映射到 HTTP 缓存系统
+            setAppCacheMaxSize(50 * 1024 * 1024L)
+
+            // 启用 WebView 的 HTTP 缓存目录，确保离线时命中的缓存能持久保留
+            // 设置后的缓存保存在 APP 内部存储中，不会被系统随意清理
+            setAppCacheEnabled(true)
+
+            // 启用保存表单数据，部分 SPA 的表单填充也受益
+            saveFormData = true
+        }
+
+        // 配置 ServiceWorker 支持
+        // 虽然 Android WebView 不支持完整的 Service Worker API，
+        // 但启用此 Controller 可让 WebView 内部缓存机制更积极
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            try {
+                val swController = android.webkit.ServiceWorkerController.getInstance()
+                val swSettings = swController.serviceWorkerWebSettings
+                swSettings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+                Log.d(TAG, "ServiceWorkerController configured")
+            } catch (e: Exception) {
+                Log.w(TAG, "ServiceWorkerController not available: ${e.message}")
+            }
         }
 
         webView.webViewClient = object : WebViewClient() {
@@ -282,6 +324,30 @@ class MainActivity : AppCompatActivity() {
             })();
         """.trimIndent()
         webView.evaluateJavascript(js, null)
+    }
+
+    /**
+     * 保存 WebView 状态和 auth token，用于横竖屏切换后恢复
+     */
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        if (::webView.isInitialized && webView.canGoBack()) {
+            webView.saveState(outState)
+            outState.putBoolean("webview_has_state", true)
+        }
+        // 保存 auth token 以防需要重新注入
+        if (authToken != null) {
+            outState.putString("auth_token", authToken)
+        }
+    }
+
+    /**
+     * 配置变化时不重建 Activity，手动处理布局变化
+     */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        Log.d(TAG, "Configuration changed: orientation=${newConfig.orientation}")
+        // 不需要重新加载 WebView，WebView 自动适应新尺寸
     }
 
     override fun onBackPressed() {

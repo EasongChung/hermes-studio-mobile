@@ -21,6 +21,28 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // ===== 签名配置 =====
+    // 从环境变量读取签名信息（CI 中由 GitHub Secrets 传入）
+    // 如果环境变量缺失，则跳过签名（仅构建 unsigned APK）
+    val keystorePath = System.getenv("KEYSTORE_PATH") ?: ""
+    val keystorePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
+    val keyAlias = System.getenv("KEY_ALIAS") ?: ""
+    val keyPassword = System.getenv("KEY_PASSWORD") ?: ""
+
+    val hasSigningConfig = keystorePath.isNotBlank() && keystorePassword.isNotBlank() &&
+            keyAlias.isNotBlank() && keyPassword.isNotBlank()
+
+    signingConfigs {
+        create("release") {
+            if (hasSigningConfig) {
+                storeFile = file(keystorePath)
+                storePassword = keystorePassword
+                keyAlias = keyAlias
+                keyPassword = keyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             // 开启混淆，减小 APK 体积
@@ -29,6 +51,14 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // 如果有签名配置，Release 使用签名
+            if (hasSigningConfig) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+        debug {
+            // Debug 默认使用 Android 调试签名
+            isMinifyEnabled = false
         }
     }
 
