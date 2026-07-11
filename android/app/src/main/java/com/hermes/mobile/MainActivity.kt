@@ -188,13 +188,11 @@ class MainActivity : AppCompatActivity() {
             setNeedInitialFocus(true)
 
             // ===== 缓存优化配置 =====
-            // 设置 AppCache 最大容量为 50MB，允许缓存更大的 API 响应（如会话记录）
-            // Android 目前使用 Chromium 内核，AppCache 被自动映射到 HTTP 缓存系统
-            setAppCacheMaxSize(50 * 1024 * 1024L)
-
-            // 启用 WebView 的 HTTP 缓存目录，确保离线时命中的缓存能持久保留
-            // 设置后的缓存保存在 APP 内部存储中，不会被系统随意清理
-            setAppCacheEnabled(true)
+            // Android API 33+ 已移除 setAppCacheMaxSize/setAppCacheEnabled，
+            // Chromium 的 HTTP 缓存系统会自动管理缓存。
+            // 启用 DOM 存储和数据库存储以增强 SPA 的离线缓存能力
+            domStorageEnabled = true
+            databaseEnabled = true
 
             // 启用保存表单数据，部分 SPA 的表单填充也受益
             saveFormData = true
