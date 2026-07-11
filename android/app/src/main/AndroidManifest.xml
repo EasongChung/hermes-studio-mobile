@@ -30,7 +30,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|fontScale|mcc|mnc|touchscreen|navigation"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
             <!-- LAUNCHER：桌面图标入口 -->
