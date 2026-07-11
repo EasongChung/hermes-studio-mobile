@@ -226,12 +226,14 @@ jobs:
           # 将 keystore 和密码打包
           cd $HOME/.android
           tar -czf keystore-package.tar.gz hermes-keystore.jks keystore-credentials.txt 2>/dev/null || true
+          # 保存 keystore 路径供后续步骤使用
+          echo "KEYSTORE_PACKAGE_PATH=$HOME/.android/keystore-package.tar.gz" >> $GITHUB_ENV
 
       - name: Upload keystore package (first-time only)
         if: steps.configure-keystore.outputs.new_keystore == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: hermes-keystore-first-time
-          path: ${{ runner.home }}/.android/keystore-package.tar.gz
+          path: ${{ env.KEYSTORE_PACKAGE_PATH }}
           retention-days: 30
           if-no-files-found: ignore
