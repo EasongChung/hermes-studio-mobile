@@ -3,16 +3,20 @@ package com.hermes.mobile
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.hermes.mobile.client.HermesChromeClient
 import com.hermes.mobile.config.ServerManager
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.ByteArrayInputStream
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
@@ -22,11 +26,12 @@ import java.net.URL
 /**
  * MainActivity - Hermes Studio Mobile 主界面
  *
- * 设计原则：混合加载 — 本地前端资源 + 远程 API 请求 + 自动登录
+ * 设计原则：混合加载 + 自动登录 token 注入
  *
- * 每次启动都弹出 ConfigActivity 选择服务器。
- * 选择后通过 Intent Extra 传入 server_url，加载对应服务器。
- * 如果配置了用户名/密码，自动调用登录 API 获取 JWT 并注入 localStorage。
+ * 如果有用户名/密码，先调用登录 API 获取 JWT token，
+ * 然后在 shouldInterceptRequest 中拦截 HTML 响应，
+ * 在 </head> 前注入 script 设置 localStorage，
+ * 确保 SPA 初始化前 token 已就绪，自动跳过登录页。
  */
 class MainActivity : AppCompatActivity() {
 
@@ -47,21 +52,22 @@ class MainActivity : AppCompatActivity() {
     private var serverOrigin: String = ""
     private var loginUsername: String = ""
     private var loginPassword: String = ""
+    /** 登录成功后获取的 JWT token，用于注入 HTML */
+    private var authToken: String? = null
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 从 Intent 获取服务器 URL 和登录凭据（由 ConfigActivity 传入）
+        // 从 Intent 获取服务器 URL 和登录凭据
         serverUrl = intent.getStringExtra("server_url") ?: ""
         loginUsername = intent.getStringExtra("server_username") ?: ""
         loginPassword = intent.getStringExtra("server_password") ?: ""
 
-        // 如果 Intent 没有 URL，检查是否有已保存的活动服务器
+        // 如果 Intent 没有 URL，检查已保存的活动服务器
         if (serverUrl.isEmpty()) {
             val serverManager = ServerManager(this)
             serverUrl = serverManager.getActiveServerUrl() ?: ""
-            // 也尝试获取保存的凭据
             val activeServer = serverManager.getActiveServer()
             if (activeServer != null) {
                 if (loginUsername.isEmpty()) loginUsername = activeServer.username
@@ -69,7 +75,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 如果还是没有 URL，跳转到配置界面
         if (serverUrl.isEmpty()) {
             startActivity(Intent(this, ConfigActivity::class.java))
             finish()
@@ -80,8 +85,74 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(R.layout.activity_main)
         webView = findViewById(R.id.webView)
-        configureWebView()
-        loadFrontend()
+
+        // 如果在凭据，先登录获取 token，再配置 WebView 并加载页面
+        if (loginUsername.isNotBlank() && loginPassword.isNotBlank()) {
+            performLoginFirst()
+        } else {
+            configureWebView()
+            loadFrontend()
+        }
+    }
+
+    /**
+     * 先登录获取 token，再配置 WebView 并加载页面
+     * 确保 token 在 SPA 初始化前就绪
+     */
+    private fun performLoginFirst() {
+        val loginUrl = "${serverOrigin}/api/auth/login"
+        val jsonBody = JSONObject().apply {
+            put("username", loginUsername)
+            put("password", loginPassword)
+        }
+
+        Thread {
+            try {
+                Log.d(TAG, "Login first: POST $loginUrl")
+                val url = URL(loginUrl)
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.doOutput = true
+                conn.connectTimeout = 15000
+                conn.readTimeout = 15000
+
+                val writer = OutputStreamWriter(conn.outputStream)
+                writer.write(jsonBody.toString())
+                writer.flush()
+                writer.close()
+
+                val responseCode = conn.responseCode
+                if (responseCode == 200) {
+                    val reader = BufferedReader(InputStreamReader(conn.inputStream))
+                    val response = reader.readText()
+                    reader.close()
+                    val json = JSONObject(response)
+                    val token = json.optString("token", "")
+                    if (token.isNotBlank()) {
+                        authToken = token
+                        Log.d(TAG, "Login success, token=${token.take(20)}...")
+                    }
+                } else {
+                    val errorReader = BufferedReader(InputStreamReader(conn.errorStream))
+                    val errorResponse = errorReader.readText()
+                    errorReader.close()
+                    Log.w(TAG, "Login failed, HTTP $responseCode: $errorResponse")
+                }
+                conn.disconnect()
+            } catch (e: Exception) {
+                Log.e(TAG, "Login error: ${e.message}", e)
+            }
+
+            // 无论登录成功与否，都加载页面（失败则手动登录）
+            Handler(Looper.getMainLooper()).post {
+                if (authToken == null) {
+                    Log.w(TAG, "No auth token, will load without auto-login")
+                }
+                configureWebView()
+                loadFrontend()
+            }
+        }.start()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -124,10 +195,6 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 injectMobileFlag()
-                // 如果有登录凭据，尝试自动登录
-                if (loginUsername.isNotBlank() && loginPassword.isNotBlank()) {
-                    performAutoLogin()
-                }
             }
         }
         webView.webChromeClient = HermesChromeClient()
@@ -146,13 +213,33 @@ class MainActivity : AppCompatActivity() {
         }
         val extension = assetPath.substringAfterLast('.', "").lowercase()
         if (extension !in STATIC_FILE_EXTENSIONS) return null
+
         val inputStream: InputStream = try {
             assets.open(assetPath)
         } catch (e: Exception) {
             return null
         }
+
         val mimeType = getMimeType(extension)
         val encoding = if (extension == "html" || extension == "js" || extension == "css") "UTF-8" else null
+
+        // 如果是 HTML 且有 token，在 </head> 前注入 localStorage 设置脚本
+        if (extension == "html" && authToken != null) {
+            try {
+                val html = inputStream.bufferedReader(Charsets.UTF_8).readText()
+                inputStream.close()
+                val escapedToken = authToken!!.replace("'", "\\'")
+                val injectScript = "<script>try{localStorage.setItem('hermes_api_key','$escapedToken');console.log('[HermesMobile] Token injected into HTML before SPA init')}catch(e){console.error('[HermesMobile] HTML inject failed:',e)}</script>"
+                val modifiedHtml = html.replace("</head>", "$injectScript</head>")
+                Log.d(TAG, "Injected auth token into HTML response (${html.length} -> ${modifiedHtml.length} bytes)")
+                return WebResourceResponse(mimeType, encoding, ByteArrayInputStream(modifiedHtml.toByteArray(Charsets.UTF_8)))
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to inject token into HTML: ${e.message}")
+                // 回退到原 HTML
+                return WebResourceResponse(mimeType, encoding, inputStream)
+            }
+        }
+
         return WebResourceResponse(mimeType, encoding, inputStream)
     }
 
@@ -195,86 +282,6 @@ class MainActivity : AppCompatActivity() {
             })();
         """.trimIndent()
         webView.evaluateJavascript(js, null)
-    }
-
-    /**
-     * 自动登录：调用 POST /api/auth/login 获取 JWT token，注入 localStorage
-     * 前端检测到 hermes_api_key 后自动跳过登录页
-     */
-    private fun performAutoLogin() {
-        val loginUrl = "${serverOrigin}/api/auth/login"
-        val jsonBody = JSONObject().apply {
-            put("username", loginUsername)
-            put("password", loginPassword)
-        }
-
-        Thread {
-            try {
-                Log.d(TAG, "Auto-login: POST $loginUrl")
-                val url = URL(loginUrl)
-                val conn = url.openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.setRequestProperty("Content-Type", "application/json")
-                conn.doOutput = true
-                conn.connectTimeout = 15000
-                conn.readTimeout = 15000
-
-                // 写入请求体
-                val writer = OutputStreamWriter(conn.outputStream)
-                writer.write(jsonBody.toString())
-                writer.flush()
-                writer.close()
-
-                val responseCode = conn.responseCode
-                if (responseCode == 200) {
-                    val reader = BufferedReader(InputStreamReader(conn.inputStream))
-                    val response = reader.readText()
-                    reader.close()
-                    val json = JSONObject(response)
-                    val token = json.optString("token", "")
-                    if (token.isNotBlank()) {
-                        Log.d(TAG, "Auto-login success, token=${token.take(20)}...")
-                        injectAuthToken(token)
-                    } else {
-                        Log.w(TAG, "Auto-login response has no token field")
-                    }
-                } else {
-                    val errorReader = BufferedReader(InputStreamReader(conn.errorStream))
-                    val errorResponse = errorReader.readText()
-                    errorReader.close()
-                    Log.w(TAG, "Auto-login failed, HTTP $responseCode: $errorResponse")
-                }
-                conn.disconnect()
-            } catch (e: Exception) {
-                Log.e(TAG, "Auto-login error: ${e.message}", e)
-            }
-        }.start()
-    }
-
-    /**
-     * 将 JWT token 注入 localStorage
-     * 前端 client.ts 通过 getApiKey() 读取 hermes_api_key 判断登录状态
-     */
-    private fun injectAuthToken(token: String) {
-        val escapedToken = token.replace("'", "\\'")
-        val js = """
-            (function() {
-                try {
-                    localStorage.setItem('hermes_api_key', '$escapedToken');
-                    console.log('[HermesMobile] Auth token injected, size=' + '$escapedToken'.length);
-                    // 刷新页面让前端检测到 token 并跳过登录
-                    if (window.location.hash === '#/login' || window.location.pathname === '/login') {
-                        window.location.reload();
-                    }
-                } catch(e) {
-                    console.error('[HermesMobile] Token injection failed:', e);
-                }
-            })();
-        """.trimIndent()
-        // 延迟 500ms 注入，确保页面完全加载
-        webView.postDelayed({
-            webView.evaluateJavascript(js, null)
-        }, 500)
     }
 
     override fun onBackPressed() {
