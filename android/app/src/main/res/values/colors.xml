@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Hermes 深紫色主题色 -->
+    <color name="hermes_primary">#1A1A2E</color>
+    <color name="hermes_primary_dark">#0F0F1A</color>
+    <color name="hermes_accent">#E94560</color>
+    <!-- Splash 背景色 -->
+    <color name="splash_background">#1A1A2E</color>
+</resources>

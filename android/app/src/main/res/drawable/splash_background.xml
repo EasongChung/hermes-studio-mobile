@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Splash 启动页背景：深紫色背景 + 居中 Logo -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 背景色 -->
+    <item android:drawable="@color/splash_background" />
+    <!-- 居中 Logo（缩放 30% 适配安全区域） -->
+    <item
+        android:width="96dp"
+        android:height="96dp"
+        android:gravity="center">
+        <bitmap
+            android:src="@mipmap/ic_launcher"
+            android:gravity="center" />
+    </item>
+</layer-list>

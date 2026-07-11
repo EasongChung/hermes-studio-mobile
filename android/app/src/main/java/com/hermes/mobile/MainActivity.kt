@@ -1,14 +1,17 @@
 package com.hermes.mobile
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
@@ -39,6 +42,8 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "HermesWeb"
         private const val ASSETS_FRONTEND_PATH = "hermes"
+        private const val PREFS_NAME = "hermes_startup"
+        private const val KEY_FIRST_LAUNCH = "first_launch_completed"
         private val STATIC_FILE_EXTENSIONS = setOf(
             "html", "js", "css", "json", "svg", "png", "jpg", "jpeg",
             "gif", "ico", "woff", "woff2", "ttf", "eot", "otf", "webp"
@@ -55,9 +60,13 @@ class MainActivity : AppCompatActivity() {
     private var loginPassword: String = ""
     /** 登录成功后获取的 JWT token，用于注入 HTML */
     private var authToken: String? = null
+    /** 标记是否正在恢复状态（横竖屏切换），避免重复触发加载 */
+    private var isRestoringState = false
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
+        // 从 Splash 主题切回正常主题（消除启动背景）
+        setTheme(R.style.Theme_HermesStudioMobile)
         super.onCreate(savedInstanceState)
 
         // 从 Intent 获取服务器 URL 和登录凭据
@@ -89,17 +98,16 @@ class MainActivity : AppCompatActivity() {
 
         // 如果有保存的 WebView 状态，优先恢复（横竖屏切换后）
         if (savedInstanceState != null && savedInstanceState.getBoolean("webview_has_state", false)) {
-            // 如果已有 token，直接还原 WebView 状态，避免重新加载
             if (loginUsername.isNotBlank() && loginPassword.isNotBlank()) {
                 authToken = savedInstanceState.getString("auth_token")
                 if (authToken != null) {
                     Log.d(TAG, "Restoring WebView state with auth token")
+                    isRestoringState = true
                     configureWebView()
                     webView.restoreState(savedInstanceState)
                     return
                 }
             }
-            // 没有 token 或还原失败，走正常加载流程
         }
 
         // 如果在凭据，先登录获取 token，再配置 WebView 并加载页面
@@ -173,11 +181,22 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun configureWebView() {
+        // ===== 启动缓存加速（Stale-While-Revalidate） =====
+        // 非首次启动：先取缓存数据秒开，等页面加载完成后再从网络更新
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val isFirstLaunch = !prefs.getBoolean(KEY_FIRST_LAUNCH, false)
+        val startupCacheMode = if (!isRestoringState && !isFirstLaunch) {
+            WebSettings.LOAD_CACHE_ELSE_NETWORK
+        } else {
+            WebSettings.LOAD_DEFAULT
+        }
+        Log.d(TAG, "Startup mode: ${if (isFirstLaunch) "first-launch" else "cached-revalidate"}")
+
         val settings = webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
             databaseEnabled = true
-            cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+            cacheMode = startupCacheMode
             useWideViewPort = true
             loadWithOverviewMode = true
             mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
@@ -187,20 +206,11 @@ class MainActivity : AppCompatActivity() {
             setSupportMultipleWindows(false)
             setNeedInitialFocus(true)
 
-            // ===== 缓存优化配置 =====
-            // Android API 33+ 已移除 setAppCacheMaxSize/setAppCacheEnabled，
-            // Chromium 的 HTTP 缓存系统会自动管理缓存。
-            // 启用 DOM 存储和数据库存储以增强 SPA 的离线缓存能力
-            domStorageEnabled = true
-            databaseEnabled = true
-
             // 启用保存表单数据，部分 SPA 的表单填充也受益
             saveFormData = true
         }
 
         // 配置 ServiceWorker 支持
-        // 虽然 Android WebView 不支持完整的 Service Worker API，
-        // 但启用此 Controller 可让 WebView 内部缓存机制更积极
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
             try {
                 val swController = android.webkit.ServiceWorkerController.getInstance()
@@ -234,7 +244,24 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                injectMobileFlag()
+                // 注入移动端标记
+                injectJs("localStorage.setItem('hermes_is_mobile','true')")
+
+                // 非首次启动 + 缓存模式加载完成后，切回 LOAD_DEFAULT
+                // 确保后续 API 请求走网络获取最新数据
+                if (view != null && view.settings.cacheMode == WebSettings.LOAD_CACHE_ELSE_NETWORK) {
+                    Log.d(TAG, "Cache-first page loaded, switching to LOAD_DEFAULT")
+                    view.settings.cacheMode = WebSettings.LOAD_DEFAULT
+                    view.evaluateJavascript("console.log('[HermesMobile] Cache mode restored to LOAD_DEFAULT')", null)
+                }
+
+                // 首次加载完成，标记为非首次启动
+                if (!isRestoringState) {
+                    prefs.edit().putBoolean(KEY_FIRST_LAUNCH, true).apply()
+                }
+
+                // 注入横屏适配脚本
+                injectOrientationHandler()
             }
         }
         webView.webChromeClient = HermesChromeClient()
@@ -310,16 +337,35 @@ class MainActivity : AppCompatActivity() {
         return if (pathStart >= 0) normalized.substring(0, pathStart) else normalized
     }
 
-    private fun injectMobileFlag() {
-        val js = """
+    private fun injectJs(js: String) {
+        webView.evaluateJavascript("""
             (function() {
                 try {
-                    localStorage.setItem('hermes_is_mobile', 'true');
-                    console.log('[HermesMobile] Mobile flag injected');
+                    $js
                 } catch(e) {
-                    console.error('[HermesMobile] Injection failed:', e);
+                    console.error('[HermesMobile] JS inject failed:', e);
                 }
             })();
+        """.trimIndent(), null)
+    }
+
+    /**
+     * 注入横竖屏适配 JS
+     * 在每次方向变化时通知 SPA 调整布局和 viewport
+     */
+    private fun injectOrientationHandler() {
+        val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val js = """
+            localStorage.setItem('hermes_is_mobile', 'true');
+            localStorage.setItem('hermes_orientation', '${if (isLandscape) "landscape" else "portrait"}');
+            // 触发 orientationchange 事件让 SPA 重新布局
+            window.dispatchEvent(new Event('orientationchange'));
+            // 调整 viewport 缩放
+            var meta = document.querySelector('meta[name="viewport"]');
+            if (meta) {
+                meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes';
+            }
+            console.log('[HermesMobile] Orientation: ${if (isLandscape) "landscape" else "portrait"}');
         """.trimIndent()
         webView.evaluateJavascript(js, null)
     }
@@ -345,7 +391,10 @@ class MainActivity : AppCompatActivity() {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         Log.d(TAG, "Configuration changed: orientation=${newConfig.orientation}")
-        // 不需要重新加载 WebView，WebView 自动适应新尺寸
+        // 注入方向变化事件，通知 SPA 重新布局
+        if (::webView.isInitialized) {
+            injectOrientationHandler()
+        }
     }
 
     override fun onBackPressed() {

@@ -4,9 +4,14 @@
          必须使用 Material3 主题，因为 layout 中使用了 Widget.Material3.* 组件
          （如 TextInputLayout OutlinedBox），AppCompat 主题会闪退 -->
     <style name="Theme.HermesStudioMobile" parent="Theme.Material3.DayNight.NoActionBar">
-        <item name="colorPrimary">#2196F3</item>
-        <item name="colorPrimaryVariant">#1976D2</item>
+        <item name="colorPrimary">#1A1A2E</item>
+        <item name="colorPrimaryVariant">#0F0F1A</item>
         <item name="colorOnPrimary">#FFFFFF</item>
-        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:statusBarColor">@color/hermes_primary</item>
+    </style>
+
+    <!-- Splash 启动页主题：显示 Logo 背景消除白屏 -->
+    <style name="Theme.HermesStudioMobile.Splash" parent="Theme.HermesStudioMobile">
+        <item name="android:windowBackground">@drawable/splash_background</item>
     </style>
 </resources>

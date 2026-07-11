@@ -16,7 +16,7 @@ android {
         targetSdk = 34
         // versionCode 在 CI 中自动递增（GITHUB_RUN_NUMBER），本地编译默认为 1
         versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
-        versionName = "0.1.0"
+        versionName = "0.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
