@@ -81,15 +81,18 @@ jobs:
       # 如果 KEYSTORE_BASE64 已配置（GitHub Secrets），直接解码使用
       # 否则首次运行，自动生成 keystore
       - name: Configure signing keystore
+        id: configure-keystore
         run: |
           mkdir -p $HOME/.android
-          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+          # 检查 KEYSTORE_BASE64 是否存在（通过环境变量传入，避免 if: 中直接引用 secrets）
+          if echo "${{ secrets.KEYSTORE_BASE64 }}" | grep -q '.'; then
             # 从 Secret 还原 keystore
             echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $HOME/.android/hermes-keystore.jks
             echo "KEYSTORE_PATH=$HOME/.android/hermes-keystore.jks" >> $GITHUB_ENV
             echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> $GITHUB_ENV
             echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> $GITHUB_ENV
             echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
+            echo "new_keystore=false" >> $GITHUB_OUTPUT
             echo "Keystore restored from secrets"
           else
             # 首次运行：生成新 keystore
@@ -115,6 +118,7 @@ jobs:
               -keysize 2048 \
               -validity 10950 \
               -dname "CN=HermesStudioMobile, OU=Development, O=EasongChung, L=Unknown, ST=Unknown, C=CN"
+            echo "new_keystore=true" >> $GITHUB_OUTPUT
             echo "New keystore generated"
           fi
 
@@ -222,16 +226,16 @@ jobs:
           make_latest: true
 
       # Step 16: 首次构建：导出 keystore 供用户保存
-      # 如果是从 Secrets 还原的 keystore，不重复导出
+      # 仅当本次是新生成的 keystore 时才导出
       - name: Export keystore for first-time setup
-        if: env.KEYSTORE_PATH != '' && secrets.KEYSTORE_BASE64 == ''
+        if: steps.configure-keystore.outputs.new_keystore == 'true'
         run: |
           # 将 keystore 和密码打包
           cd $HOME/.android
           tar -czf keystore-package.tar.gz hermes-keystore.jks keystore-credentials.txt 2>/dev/null || true
 
       - name: Upload keystore package (first-time only)
-        if: env.KEYSTORE_PATH != '' && secrets.KEYSTORE_BASE64 == ''
+        if: steps.configure-keystore.outputs.new_keystore == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: hermes-keystore-first-time
