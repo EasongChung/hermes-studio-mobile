@@ -4,11 +4,11 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -54,6 +54,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private lateinit var webView: WebView
+    private lateinit var ttsManager: TtsManager
     private var serverUrl: String = ""
     private var serverOrigin: String = ""
     private var loginUsername: String = ""
@@ -95,6 +96,13 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(R.layout.activity_main)
         webView = findViewById(R.id.webView)
+
+        // 初始化 TTS 引擎
+        ttsManager = TtsManager(this)
+        ttsManager.init()
+
+        // 注册 JS 接口（暴露给前端调用 Android 原生 TTS）
+        webView.addJavascriptInterface(HermesJsInterface(), "HermesAndroid")
 
         // 如果有保存的 WebView 状态，优先恢复（横竖屏切换后）
         if (savedInstanceState != null && savedInstanceState.getBoolean("webview_has_state", false)) {
@@ -262,6 +270,10 @@ class MainActivity : AppCompatActivity() {
 
                 // 注入横屏适配脚本
                 injectOrientationHandler()
+
+                // 注入 TTS polyfill，覆盖 window.speechSynthesis
+                // Android WebView 不支持 Web Speech API，需要 polyfill 将朗读请求路由到原生 TTS
+                injectTtsPolyfill()
             }
         }
         webView.webChromeClient = HermesChromeClient()
@@ -370,6 +382,125 @@ class MainActivity : AppCompatActivity() {
         webView.evaluateJavascript(js, null)
     }
 
+    // =====================================================================
+    // injectTtsPolyfill — 注入 Web Speech API polyfill
+    //
+    // Hermes 前端使用 window.speechSynthesis（Web Speech API）朗读 AI 回复，
+    // 但 Android WebView 不支持此 API。本方法注入 polyfill 覆盖
+    // window.speechSynthesis，将 speak() / cancel() 等调用路由到
+    // HermesAndroid JS 接口（经由 @JavascriptInterface 调用原生 TTS）。
+    //
+    // 关键思路：不修改前端代码，纯注入式 polyfill 方案。
+    // =====================================================================
+    private fun injectTtsPolyfill() {
+        val js = """
+            (function() {
+                // 仅在 speechSynthesis 不可用或不完整时注入 polyfill
+                if (!window.speechSynthesis || typeof window.speechSynthesis.speak !== 'function') {
+                    // 使用一个数组缓存待朗读的 utterance，便于后续扩展
+                    var pendingUtterances = [];
+
+                    window.speechSynthesis = {
+                        speaking: false,
+                        pending: false,
+
+                        /**
+                         * 朗读语音
+                         * 将 utterance.text 通过 HermesAndroid 原生接口传递给 Android TTS 引擎
+                         */
+                        speak: function(utterance) {
+                            if (utterance && utterance.text) {
+                                pendingUtterances.push(utterance);
+                                try {
+                                    HermesAndroid.speak(utterance.text);
+                                    this.speaking = true;
+                                    console.log('[HermesTTS] speak: "' + utterance.text.substring(0, 50) + '..."');
+                                } catch(e) {
+                                    console.error('[HermesTTS] HermesAndroid.speak error:', e);
+                                }
+                            }
+                        },
+
+                        /**
+                         * 取消朗读
+                         */
+                        cancel: function() {
+                            pendingUtterances = [];
+                            this.speaking = false;
+                            this.pending = false;
+                            try {
+                                HermesAndroid.stopSpeaking();
+                                console.log('[HermesTTS] cancel');
+                            } catch(e) {
+                                console.error('[HermesTTS] HermesAndroid.stopSpeaking error:', e);
+                            }
+                        },
+
+                        /**
+                         * 暂停朗读（Android TTS 不支持暂停，直接停止）
+                         */
+                        pause: function() {
+                            this.pending = true;
+                            try {
+                                HermesAndroid.stopSpeaking();
+                                console.log('[HermesTTS] pause');
+                            } catch(e) {
+                                console.error('[HermesTTS] pause error:', e);
+                            }
+                        },
+
+                        /**
+                         * 恢复朗读（Android TTS 不支持恢复，重新朗读最新的一条）
+                         */
+                        resume: function() {
+                            this.pending = false;
+                            if (pendingUtterances.length > 0) {
+                                var last = pendingUtterances[pendingUtterances.length - 1];
+                                try {
+                                    HermesAndroid.speak(last.text);
+                                    this.speaking = true;
+                                    console.log('[HermesTTS] resume');
+                                } catch(e) {
+                                    console.error('[HermesTTS] resume error:', e);
+                                }
+                            }
+                        },
+
+                        /**
+                         * 获取可用语音列表（Android WebView 无法获取，返回空数组）
+                         */
+                        getVoices: function() {
+                            return [];
+                        },
+
+                        /**
+                         * 语音变更回调（Android 不支持动态语音切换，置空）
+                         */
+                        onvoiceschanged: null
+                    };
+
+                    // 监听原生 TTS 事件（通过 CustomEvent 通知前端朗读状态变化）
+                    document.addEventListener('tts:started', function() {
+                        window.speechSynthesis.speaking = true;
+                    });
+                    document.addEventListener('tts:finished', function() {
+                        window.speechSynthesis.speaking = false;
+                        window.speechSynthesis.pending = false;
+                    });
+                    document.addEventListener('tts:error', function() {
+                        window.speechSynthesis.speaking = false;
+                        window.speechSynthesis.pending = false;
+                    });
+
+                    console.log('[HermesMobile] TTS polyfill injected: window.speechSynthesis -> HermesAndroid');
+                } else {
+                    console.log('[HermesMobile] Native speechSynthesis available, no polyfill needed');
+                }
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
+    }
+
     /**
      * 保存 WebView 状态和 auth token，用于横竖屏切换后恢复
      */
@@ -405,6 +536,38 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // =====================================================================
+    // HermesJsInterface — JS 桥接接口
+    //
+    // 通过 @JavascriptInterface 注解暴露方法给前端 JavaScript 调用。
+    // 在 Android WebView 中，JS 只能调用带此注解的 public 方法。
+    // 前端通过 window.HermesAndroid.speak(text) 和
+    // window.HermesAndroid.stopSpeaking() 调用原生 TTS。
+    // =====================================================================
+    inner class HermesJsInterface {
+
+        /**
+         * 朗读指定文本
+         * 由前端 window.speechSynthesis.speak(utterance) 被 polyfill 拦截后调用
+         * @param text 要朗读的文本内容
+         */
+        @JavascriptInterface
+        fun speak(text: String) {
+            Log.d(TAG, "JS bridge: speak() called, text.length=${text.length}")
+            ttsManager.speak(text)
+        }
+
+        /**
+         * 停止朗读
+         * 由前端 window.speechSynthesis.cancel() 被 polyfill 拦截后调用
+         */
+        @JavascriptInterface
+        fun stopSpeaking() {
+            Log.d(TAG, "JS bridge: stopSpeaking() called")
+            ttsManager.stop()
+        }
+    }
+
     override fun onPause() {
         super.onPause()
         if (::webView.isInitialized) webView.onPause()
@@ -416,6 +579,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        // 释放 TTS 引擎资源（停止朗读 + 关闭引擎）
+        if (::ttsManager.isInitialized) {
+            ttsManager.destroy()
+        }
         if (::webView.isInitialized) webView.destroy()
         super.onDestroy()
     }
