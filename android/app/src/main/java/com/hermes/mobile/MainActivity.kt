@@ -12,6 +12,7 @@ import android.os.Looper
 import android.speech.RecognizerIntent
 import android.util.Log
 import android.view.View
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -357,9 +358,25 @@ class MainActivity : AppCompatActivity() {
             ) {
                 super.onReceivedError(view, errorCode, description, failingUrl)
                 Log.e(TAG, "WebView error: code=$errorCode, desc=$description, url=$failingUrl")
-                // 只在主页面加载错误时显示横幅（非子资源加载）
+                // 只在主页面加载错误时显示横幅
                 if (failingUrl == serverUrl || failingUrl == null || errorCode == ERROR_HOST_LOOKUP || errorCode == ERROR_CONNECT) {
-                    showErrorBanner(description ?: "网络连接失败")
+                    showErrorBanner(getChineseErrorMsg(errorCode, description))
+                }
+            }
+
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: WebResourceError?
+            ) {
+                super.onReceivedError(view, request, error)
+                val errorCode = error?.errorCode ?: -1
+                val description = error?.description?.toString() ?: ""
+                val url = request?.url?.toString() ?: ""
+                Log.e(TAG, "WebView error(API23+): code=$errorCode, desc=$description, url=$url")
+                // 只在主页面加载错误时显示横幅
+                if (url == serverUrl || url.isEmpty() || errorCode == ERROR_HOST_LOOKUP || errorCode == ERROR_CONNECT) {
+                    showErrorBanner(getChineseErrorMsg(errorCode, description))
                 }
             }
         }
@@ -519,6 +536,24 @@ class MainActivity : AppCompatActivity() {
 
     private fun hideErrorBanner() {
         errorBanner.visibility = View.GONE
+    }
+
+    /**
+     * 将网络错误码转为中文提示
+     */
+    private fun getChineseErrorMsg(errorCode: Int, description: String?): String {
+        // 常见错误码中文映射
+        return when (errorCode) {
+            WebViewClient.ERROR_HOST_LOOKUP -> "无法解析服务器地址，请检查网络连接"
+            WebViewClient.ERROR_CONNECT -> "无法连接到服务器，请检查服务器是否运行"
+            WebViewClient.ERROR_TIMEOUT -> "连接超时，请检查网络或服务器状态"
+            WebViewClient.ERROR_BAD_URL -> "服务器地址格式错误"
+            WebViewClient.ERROR_IO -> "网络连接异常，请稍后重试"
+            WebViewClient.ERROR_UNKNOWN -> "网络连接失败，请检查服务器是否可达"
+            else -> description?.takeIf { it.isNotBlank() }
+                ?.let { "网络错误：$it" }
+                ?: "网络连接失败，请检查服务器是否可达"
+        }
     }
 
     // ===== 生命周期 =====
