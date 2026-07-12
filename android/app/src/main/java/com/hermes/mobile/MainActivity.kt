@@ -1,6 +1,7 @@
 package com.hermes.mobile
 
 import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
@@ -8,13 +9,20 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.speech.RecognizerIntent
 import android.util.Log
+import android.view.View
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Button
+import android.widget.ImageButton
+import android.widget.TextView
+import android.widget.LinearLayout
 import android.widget.Toast
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import androidx.appcompat.app.AppCompatActivity
 import com.hermes.mobile.client.HermesChromeClient
 import com.hermes.mobile.config.ServerManager
@@ -26,16 +34,16 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 
 /**
  * MainActivity - Hermes Studio Mobile 主界面
  *
- * 设计原则：混合加载 + 自动登录 token 注入
- *
- * 如果有用户名/密码，先调用登录 API 获取 JWT token，
- * 然后在 shouldInterceptRequest 中拦截 HTML 响应，
- * 在 </head> 前注入 script 设置 localStorage，
- * 确保 SPA 初始化前 token 已就绪，自动跳过登录页。
+ * v0.2.0 新增功能：
+ * - 上拉刷新：SwipeRefreshLayout 包裹 WebView
+ * - 网络错误提示：红色横幅 + 重试按钮
+ * - TTS 朗读：Android 系统 TextToSpeech 朗读助手回复
+ * - 语音输入：系统 RecognizerIntent 麦克风转文字
  */
 class MainActivity : AppCompatActivity() {
 
@@ -44,6 +52,7 @@ class MainActivity : AppCompatActivity() {
         private const val ASSETS_FRONTEND_PATH = "hermes"
         private const val PREFS_NAME = "hermes_startup"
         private const val KEY_FIRST_LAUNCH = "first_launch_completed"
+        private const val REQUEST_CODE_SPEECH_INPUT = 1001
         private val STATIC_FILE_EXTENSIONS = setOf(
             "html", "js", "css", "json", "svg", "png", "jpg", "jpeg",
             "gif", "ico", "woff", "woff2", "ttf", "eot", "otf", "webp"
@@ -54,18 +63,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private lateinit var webView: WebView
+    private lateinit var swipeRefresh: SwipeRefreshLayout
+    private lateinit var errorBanner: LinearLayout
+    private lateinit var retryBtn: Button
+    private lateinit var voiceInputBtn: ImageButton
+    private lateinit var ttsStopBtn: ImageButton
+    private lateinit var ttsManager: TtsManager
+
     private var serverUrl: String = ""
     private var serverOrigin: String = ""
     private var loginUsername: String = ""
     private var loginPassword: String = ""
-    /** 登录成功后获取的 JWT token，用于注入 HTML */
     private var authToken: String? = null
-    /** 标记是否正在恢复状态（横竖屏切换），避免重复触发加载 */
     private var isRestoringState = false
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
-        // 从 Splash 主题切回正常主题（消除启动背景）
         setTheme(R.style.Theme_HermesStudioMobile)
         super.onCreate(savedInstanceState)
 
@@ -74,7 +87,6 @@ class MainActivity : AppCompatActivity() {
         loginUsername = intent.getStringExtra("server_username") ?: ""
         loginPassword = intent.getStringExtra("server_password") ?: ""
 
-        // 如果 Intent 没有 URL，检查已保存的活动服务器
         if (serverUrl.isEmpty()) {
             val serverManager = ServerManager(this)
             serverUrl = serverManager.getActiveServerUrl() ?: ""
@@ -95,8 +107,52 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(R.layout.activity_main)
         webView = findViewById(R.id.webView)
+        swipeRefresh = findViewById(R.id.swipeRefresh)
+        errorBanner = findViewById(R.id.errorBanner)
+        retryBtn = findViewById(R.id.retryBtn)
+        voiceInputBtn = findViewById(R.id.voiceInputBtn)
+        ttsStopBtn = findViewById(R.id.ttsStopBtn)
 
-        // 如果有保存的 WebView 状态，优先恢复（横竖屏切换后）
+        // 初始化 TTS
+        ttsManager = TtsManager(this)
+        ttsManager.init()
+
+        // ===== 上拉刷新配置 =====
+        swipeRefresh.setColorSchemeResources(
+            android.R.color.holo_blue_light,
+            android.R.color.holo_purple,
+            android.R.color.holo_red_light
+        )
+        swipeRefresh.setOnRefreshListener {
+            Log.d(TAG, "Pull-up-to-refresh triggered")
+            hideErrorBanner()
+            webView.reload()
+            // 超时保护：如果5秒后刷新的旋转圈没消失，强制取消
+            Handler(Looper.getMainLooper()).postDelayed({
+                if (swipeRefresh.isRefreshing) {
+                    swipeRefresh.isRefreshing = false
+                }
+            }, 5000)
+        }
+
+        // ===== 重试按钮 =====
+        retryBtn.setOnClickListener {
+            hideErrorBanner()
+            webView.reload()
+        }
+
+        // ===== 语音输入按钮 =====
+        voiceInputBtn.setOnClickListener {
+            startVoiceInput()
+        }
+
+        // ===== TTS 停止按钮 =====
+        ttsStopBtn.setOnClickListener {
+            ttsManager.stop()
+            Toast.makeText(this, "朗读已停止", Toast.LENGTH_SHORT).show()
+        }
+
+        // 恢复状态或加载新页面
         if (savedInstanceState != null && savedInstanceState.getBoolean("webview_has_state", false)) {
             if (loginUsername.isNotBlank() && loginPassword.isNotBlank()) {
                 authToken = savedInstanceState.getString("auth_token")
@@ -110,7 +166,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 如果在凭据，先登录获取 token，再配置 WebView 并加载页面
         if (loginUsername.isNotBlank() && loginPassword.isNotBlank()) {
             performLoginFirst()
         } else {
@@ -120,9 +175,46 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 先登录获取 token，再配置 WebView 并加载页面
-     * 确保 token 在 SPA 初始化前就绪
+     * 启动系统语音识别
      */
+    private fun startVoiceInput() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.CHINESE.toString())
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "说出你想对 Hermes 说的话")
+        }
+        try {
+            startActivityForResult(intent, REQUEST_CODE_SPEECH_INPUT)
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(this, "设备不支持语音识别", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /**
+     * 语音识别结果回调
+     */
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_CODE_SPEECH_INPUT && resultCode == RESULT_OK && data != null) {
+            val results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            if (!results.isNullOrEmpty()) {
+                val spokenText = results[0]
+                Log.d(TAG, "Voice input: $spokenText")
+                // 将语音识别结果填充到输入框
+                val escapedText = spokenText.replace("'", "\\'").replace("\n", "\\n")
+                injectJs("""
+                    var input = document.querySelector('textarea, [contenteditable="true"], .input-area, .message-input');
+                    if (input) {
+                        input.value = '$escapedText';
+                        input.dispatchEvent(new Event('input', {bubbles: true}));
+                        input.focus();
+                    }
+                """.trimIndent())
+                Toast.makeText(this, "语音已识别：$spokenText", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     private fun performLoginFirst() {
         val loginUrl = "${serverOrigin}/api/auth/login"
         val jsonBody = JSONObject().apply {
@@ -168,7 +260,6 @@ class MainActivity : AppCompatActivity() {
                 Log.e(TAG, "Login error: ${e.message}", e)
             }
 
-            // 无论登录成功与否，都加载页面（失败则手动登录）
             Handler(Looper.getMainLooper()).post {
                 if (authToken == null) {
                     Log.w(TAG, "No auth token, will load without auto-login")
@@ -181,8 +272,6 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun configureWebView() {
-        // ===== 启动缓存加速（Stale-While-Revalidate） =====
-        // 非首次启动：先取缓存数据秒开，等页面加载完成后再从网络更新
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val isFirstLaunch = !prefs.getBoolean(KEY_FIRST_LAUNCH, false)
         val startupCacheMode = if (!isRestoringState && !isFirstLaunch) {
@@ -205,12 +294,9 @@ class MainActivity : AppCompatActivity() {
             displayZoomControls = false
             setSupportMultipleWindows(false)
             setNeedInitialFocus(true)
-
-            // 启用保存表单数据，部分 SPA 的表单填充也受益
             saveFormData = true
         }
 
-        // 配置 ServiceWorker 支持
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
             try {
                 val swController = android.webkit.ServiceWorkerController.getInstance()
@@ -244,24 +330,37 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
+                // 隐藏刷新动画
+                swipeRefresh.isRefreshing = false
                 // 注入移动端标记
                 injectJs("localStorage.setItem('hermes_is_mobile','true')")
 
-                // 非首次启动 + 缓存模式加载完成后，切回 LOAD_DEFAULT
-                // 确保后续 API 请求走网络获取最新数据
                 if (view != null && view.settings.cacheMode == WebSettings.LOAD_CACHE_ELSE_NETWORK) {
                     Log.d(TAG, "Cache-first page loaded, switching to LOAD_DEFAULT")
                     view.settings.cacheMode = WebSettings.LOAD_DEFAULT
-                    view.evaluateJavascript("console.log('[HermesMobile] Cache mode restored to LOAD_DEFAULT')", null)
                 }
 
-                // 首次加载完成，标记为非首次启动
                 if (!isRestoringState) {
                     prefs.edit().putBoolean(KEY_FIRST_LAUNCH, true).apply()
                 }
 
-                // 注入横屏适配脚本
                 injectOrientationHandler()
+                // 注入 TTS 和语音控制接口
+                injectNativeInterface()
+            }
+
+            override fun onReceivedError(
+                view: WebView?,
+                errorCode: Int,
+                description: String?,
+                failingUrl: String?
+            ) {
+                super.onReceivedError(view, errorCode, description, failingUrl)
+                Log.e(TAG, "WebView error: code=$errorCode, desc=$description, url=$failingUrl")
+                // 只在主页面加载错误时显示横幅（非子资源加载）
+                if (failingUrl == serverUrl || failingUrl == null || errorCode == ERROR_HOST_LOOKUP || errorCode == ERROR_CONNECT) {
+                    showErrorBanner(description ?: "网络连接失败")
+                }
             }
         }
         webView.webChromeClient = HermesChromeClient()
@@ -290,7 +389,6 @@ class MainActivity : AppCompatActivity() {
         val mimeType = getMimeType(extension)
         val encoding = if (extension == "html" || extension == "js" || extension == "css") "UTF-8" else null
 
-        // 如果是 HTML 且有 token，在 </head> 前注入 localStorage 设置脚本
         if (extension == "html" && authToken != null) {
             try {
                 val html = inputStream.bufferedReader(Charsets.UTF_8).readText()
@@ -302,7 +400,6 @@ class MainActivity : AppCompatActivity() {
                 return WebResourceResponse(mimeType, encoding, ByteArrayInputStream(modifiedHtml.toByteArray(Charsets.UTF_8)))
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to inject token into HTML: ${e.message}")
-                // 回退到原 HTML
                 return WebResourceResponse(mimeType, encoding, inputStream)
             }
         }
@@ -340,58 +437,106 @@ class MainActivity : AppCompatActivity() {
     private fun injectJs(js: String) {
         webView.evaluateJavascript("""
             (function() {
-                try {
-                    $js
-                } catch(e) {
-                    console.error('[HermesMobile] JS inject failed:', e);
-                }
+                try { $js } catch(e) { console.error('[HermesMobile] JS inject failed:', e); }
             })();
         """.trimIndent(), null)
     }
 
-    /**
-     * 注入横竖屏适配 JS
-     * 在每次方向变化时通知 SPA 调整布局和 viewport
-     */
     private fun injectOrientationHandler() {
         val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         val js = """
             localStorage.setItem('hermes_is_mobile', 'true');
             localStorage.setItem('hermes_orientation', '${if (isLandscape) "landscape" else "portrait"}');
-            // 触发 orientationchange 事件让 SPA 重新布局
             window.dispatchEvent(new Event('orientationchange'));
-            // 调整 viewport 缩放
             var meta = document.querySelector('meta[name="viewport"]');
             if (meta) {
                 meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes';
             }
-            console.log('[HermesMobile] Orientation: ${if (isLandscape) "landscape" else "portrait"}');
         """.trimIndent()
         webView.evaluateJavascript(js, null)
     }
 
     /**
-     * 保存 WebView 状态和 auth token，用于横竖屏切换后恢复
+     * 注入 TTS 和语音控制的 JS 接口
+     * 让 SPA 可以通过 JS 调用 TTS 朗读消息
      */
+    private fun injectNativeInterface() {
+        val js = """
+            // 注入 HermesMobile 原生 API
+            if (!window.HermesMobile) {
+                window.HermesMobile = {};
+                // TTS 朗读文本
+                window.HermesMobile.speak = function(text) {
+                    Android.speak(text);
+                };
+                // 停止朗读
+                window.HermesMobile.stopSpeaking = function() {
+                    Android.stopSpeaking();
+                };
+                // 启动语音输入
+                window.HermesMobile.startVoiceInput = function() {
+                    Android.startVoiceInput();
+                };
+                console.log('[HermesMobile] Native interface injected');
+            }
+        """.trimIndent()
+        // 通过 JSInterface 暴露给 WebView
+        webView.addJavascriptInterface(HermesJsInterface(), "Android")
+        webView.evaluateJavascript(js, null)
+    }
+
+    /**
+     * JS 接口类：暴露给 JavaScript 调用
+     * 需要在 @JavascriptInterface 方法上标注
+     */
+    @Suppress("unused")
+    inner class HermesJsInterface {
+        @android.webkit.JavascriptInterface
+        fun speak(text: String) {
+            Log.d(TAG, "JS called speak: ${text.take(50)}...")
+            runOnUiThread {
+                ttsManager.speak(text)
+            }
+        }
+
+        @android.webkit.JavascriptInterface
+        fun stopSpeaking() {
+            Log.d(TAG, "JS called stopSpeaking")
+            runOnUiThread {
+                ttsManager.stop()
+            }
+        }
+    }
+
+    // ===== 网络错误提示 =====
+
+    private fun showErrorBanner(message: String) {
+        errorBanner.visibility = View.VISIBLE
+        val errorText = findViewById<TextView>(R.id.errorText)
+        errorText?.text = message
+        Log.d(TAG, "Error banner shown: $message")
+    }
+
+    private fun hideErrorBanner() {
+        errorBanner.visibility = View.GONE
+    }
+
+    // ===== 生命周期 =====
+
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         if (::webView.isInitialized && webView.canGoBack()) {
             webView.saveState(outState)
             outState.putBoolean("webview_has_state", true)
         }
-        // 保存 auth token 以防需要重新注入
         if (authToken != null) {
             outState.putString("auth_token", authToken)
         }
     }
 
-    /**
-     * 配置变化时不重建 Activity，手动处理布局变化
-     */
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         Log.d(TAG, "Configuration changed: orientation=${newConfig.orientation}")
-        // 注入方向变化事件，通知 SPA 重新布局
         if (::webView.isInitialized) {
             injectOrientationHandler()
         }
@@ -417,6 +562,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         if (::webView.isInitialized) webView.destroy()
+        if (::ttsManager.isInitialized) ttsManager.destroy()
         super.onDestroy()
     }
 }

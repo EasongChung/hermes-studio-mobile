@@ -16,7 +16,7 @@ android {
         targetSdk = 34
         // versionCode 在 CI 中自动递增（GITHUB_RUN_NUMBER），本地编译默认为 1
         versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
-        versionName = "0.1.1"
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -82,4 +82,6 @@ dependencies {
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     // WebView 相关（AndroidX WebKit）
     implementation("androidx.webkit:webkit:1.9.0")
+    // 下拉刷新（上拉加载更多）
+    implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
 }
