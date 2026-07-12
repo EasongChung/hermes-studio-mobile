@@ -5,13 +5,13 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.speech.RecognizerIntent
 import android.util.Log
 import android.view.View
+import android.webkit.JavascriptInterface
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -43,7 +43,7 @@ import java.util.Locale
  * v0.2.0 新增功能：
  * - 上拉刷新：SwipeRefreshLayout 包裹 WebView
  * - 网络错误提示：红色横幅 + 重试按钮
- * - TTS 朗读：Android 系统 TextToSpeech 朗读助手回复
+ * - TTS 朗读：Android 系统 TextToSpeech 朗读助手回复（含 speechSynthesis polyfill）
  * - 语音输入：系统 RecognizerIntent 麦克风转文字
  */
 class MainActivity : AppCompatActivity() {
@@ -70,7 +70,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var voiceInputBtn: ImageButton
     private lateinit var ttsStopBtn: ImageButton
     private lateinit var ttsManager: TtsManager
-
     private var serverUrl: String = ""
     private var serverOrigin: String = ""
     private var loginUsername: String = ""
@@ -152,6 +151,12 @@ class MainActivity : AppCompatActivity() {
             ttsManager.stop()
             Toast.makeText(this, "朗读已停止", Toast.LENGTH_SHORT).show()
         }
+
+        // ===== 注册 JS 接口 =====
+        // "Android" — 供 injectNativeInterface() 中 window.HermesMobile.speak() 调用
+        // "HermesAndroid" — 供 speechSynthesis polyfill 中 HermesAndroid.speak() 调用
+        webView.addJavascriptInterface(HermesJsInterface(), "Android")
+        webView.addJavascriptInterface(HermesJsInterface(), "HermesAndroid")
 
         // 恢复状态或加载新页面
         if (savedInstanceState != null && savedInstanceState.getBoolean("webview_has_state", false)) {
@@ -346,8 +351,10 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 injectOrientationHandler()
-                // 注入 TTS 和语音控制接口
+                // 注入 TTS 和语音控制 JS 接口
                 injectNativeInterface()
+                // 注入 speechSynthesis polyfill（覆盖 window.speechSynthesis 路由到原生 TTS）
+                injectTtsPolyfill()
             }
 
             override fun onReceivedError(
@@ -473,55 +480,126 @@ class MainActivity : AppCompatActivity() {
         webView.evaluateJavascript(js, null)
     }
 
+    // =====================================================================
+    // injectTtsPolyfill — 注入 Web Speech API polyfill
+    //
+    // Hermes 前端使用 window.speechSynthesis（Web Speech API）朗读 AI 回复，
+    // 但 Android WebView 不支持此 API。本方法注入 polyfill 覆盖
+    // window.speechSynthesis，将 speak() / cancel() 等调用路由到
+    // HermesAndroid JS 接口（经由 @JavascriptInterface 调用原生 TTS）。
+    //
+    // 关键思路：不修改前端代码，纯注入式 polyfill 方案。
+    // =====================================================================
+    private fun injectTtsPolyfill() {
+        val js = """
+            (function() {
+                // 仅在 speechSynthesis 不可用或不完整时注入 polyfill
+                if (!window.speechSynthesis || typeof window.speechSynthesis.speak !== 'function') {
+                    var pendingUtterances = [];
+
+                    window.speechSynthesis = {
+                        speaking: false,
+                        pending: false,
+
+                        speak: function(utterance) {
+                            if (utterance && utterance.text) {
+                                pendingUtterances.push(utterance);
+                                try {
+                                    HermesAndroid.speak(utterance.text);
+                                    this.speaking = true;
+                                    console.log('[HermesTTS] speak: "' + utterance.text.substring(0, 50) + '..."');
+                                } catch(e) {
+                                    console.error('[HermesTTS] HermesAndroid.speak error:', e);
+                                }
+                            }
+                        },
+
+                        cancel: function() {
+                            pendingUtterances = [];
+                            this.speaking = false;
+                            this.pending = false;
+                            try {
+                                HermesAndroid.stopSpeaking();
+                                console.log('[HermesTTS] cancel');
+                            } catch(e) {
+                                console.error('[HermesTTS] HermesAndroid.stopSpeaking error:', e);
+                            }
+                        },
+
+                        pause: function() {
+                            this.pending = true;
+                            try {
+                                HermesAndroid.stopSpeaking();
+                                console.log('[HermesTTS] pause');
+                            } catch(e) {
+                                console.error('[HermesTTS] pause error:', e);
+                            }
+                        },
+
+                        resume: function() {
+                            this.pending = false;
+                            if (pendingUtterances.length > 0) {
+                                var last = pendingUtterances[pendingUtterances.length - 1];
+                                try {
+                                    HermesAndroid.speak(last.text);
+                                    this.speaking = true;
+                                    console.log('[HermesTTS] resume');
+                                } catch(e) {
+                                    console.error('[HermesTTS] resume error:', e);
+                                }
+                            }
+                        },
+
+                        getVoices: function() { return []; },
+                        onvoiceschanged: null
+                    };
+
+                    console.log('[HermesMobile] TTS polyfill injected: window.speechSynthesis -> HermesAndroid');
+                } else {
+                    console.log('[HermesMobile] Native speechSynthesis available, no polyfill needed');
+                }
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
+    }
+
     /**
      * 注入 TTS 和语音控制的 JS 接口
      * 让 SPA 可以通过 JS 调用 TTS 朗读消息
      */
     private fun injectNativeInterface() {
         val js = """
-            // 注入 HermesMobile 原生 API
             if (!window.HermesMobile) {
                 window.HermesMobile = {};
-                // TTS 朗读文本
-                window.HermesMobile.speak = function(text) {
-                    Android.speak(text);
-                };
-                // 停止朗读
-                window.HermesMobile.stopSpeaking = function() {
-                    Android.stopSpeaking();
-                };
-                // 启动语音输入
-                window.HermesMobile.startVoiceInput = function() {
-                    Android.startVoiceInput();
-                };
+                window.HermesMobile.speak = function(text) { Android.speak(text); };
+                window.HermesMobile.stopSpeaking = function() { Android.stopSpeaking(); };
+                window.HermesMobile.startVoiceInput = function() { Android.startVoiceInput(); };
                 console.log('[HermesMobile] Native interface injected');
             }
         """.trimIndent()
-        // 通过 JSInterface 暴露给 WebView
-        webView.addJavascriptInterface(HermesJsInterface(), "Android")
         webView.evaluateJavascript(js, null)
     }
 
     /**
      * JS 接口类：暴露给 JavaScript 调用
-     * 需要在 @JavascriptInterface 方法上标注
+     * 通过 @JavascriptInterface 注解暴露给前端
+     *
+     * 在 onCreate 中以两个名字注册：
+     * - "Android" — 供 injectNativeInterface() 的 window.HermesMobile 调用
+     * - "HermesAndroid" — 供 speechSynthesis polyfill 调用
      */
     @Suppress("unused")
     inner class HermesJsInterface {
-        @android.webkit.JavascriptInterface
+        @JavascriptInterface
         fun speak(text: String) {
             Log.d(TAG, "JS called speak: ${text.take(50)}...")
-            runOnUiThread {
-                ttsManager.speak(text)
-            }
+            runOnUiThread { ttsManager.speak(text) }
         }
 
-        @android.webkit.JavascriptInterface
+        @JavascriptInterface
         fun stopSpeaking() {
             Log.d(TAG, "JS called stopSpeaking")
-            runOnUiThread {
-                ttsManager.stop()
-            }
+            runOnUiThread { ttsManager.stop() }
         }
     }
 
@@ -542,7 +620,6 @@ class MainActivity : AppCompatActivity() {
      * 将网络错误码转为中文提示
      */
     private fun getChineseErrorMsg(errorCode: Int, description: String?): String {
-        // 常见错误码中文映射
         return when (errorCode) {
             WebViewClient.ERROR_HOST_LOOKUP -> "无法解析服务器地址，请检查网络连接"
             WebViewClient.ERROR_CONNECT -> "无法连接到服务器，请检查服务器是否运行"
@@ -596,8 +673,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        // 释放 TTS 引擎资源（停止朗读 + 关闭引擎）
+        if (::ttsManager.isInitialized) {
+            ttsManager.destroy()
+        }
         if (::webView.isInitialized) webView.destroy()
-        if (::ttsManager.isInitialized) ttsManager.destroy()
         super.onDestroy()
     }
 }
