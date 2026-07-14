@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- btn_circle_outline.xml - 圆形带边框按钮背景
+     用于倒计时秒数加减按钮，显示为圆环样式 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <stroke
+        android:width="1dp"
+        android:color="#2196F3" />
+    <solid android:color="@android:color/transparent" />
+</shape>

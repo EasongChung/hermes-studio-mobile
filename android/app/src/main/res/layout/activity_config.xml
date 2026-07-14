@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- activity_config.xml - 服务器列表管理界面
-     显示所有已添加的服务器，支持选择、添加、编辑、删除 -->
+<!-- activity_config.xml - 服务器列表管理界面（也是APP启动首页）
+     显示所有已添加的服务器，支持选择、添加、编辑、删除。
+     功能包括：
+     1. 服务器列表管理
+     2. 倒计时自动登录（可开关、自定义倒计时秒数）
+     3. 项目信息与GitHub链接（底部小字淡显） -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -60,7 +64,121 @@
         android:visibility="visible"
         android:lineSpacingExtra="4dp" />
 
-    <!-- 底部按钮 -->
+    <!-- ===== 倒计时自动登录设置区 ===== -->
+    <LinearLayout
+        android:id="@+id/autoLoginSection"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="12dp"
+        android:background="#FFFFFF"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="4dp"
+        android:visibility="gone">
+
+        <!-- 开关行：倒计时自动登录 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="倒计时自动登录"
+                android:textSize="14sp"
+                android:textColor="#333333" />
+
+            <!-- 倒计时显示 -->
+            <TextView
+                android:id="@+id/countdownText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="18sp"
+                android:textColor="#2196F3"
+                android:textStyle="bold"
+                android:visibility="gone"
+                android:layout_marginEnd="12dp" />
+
+            <androidx.appcompat.widget.SwitchCompat
+                android:id="@+id/autoLoginSwitch"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+        </LinearLayout>
+
+        <!-- 倒计时秒数设置 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="8dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="倒计时长（秒）"
+                android:textSize="12sp"
+                android:textColor="#999999" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <Button
+                    android:id="@+id/countdownMinusBtn"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:text="-"
+                    android:textSize="18sp"
+                    android:gravity="center"
+                    style="@style/Widget.AppCompat.Button.Borderless"
+                    android:textColor="#2196F3"
+                    android:background="@drawable/btn_circle_outline" />
+
+                <TextView
+                    android:id="@+id/countdownDurationText"
+                    android:layout_width="48dp"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:text="5"
+                    android:textSize="16sp"
+                    android:textColor="#1A1A1A"
+                    android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/countdownPlusBtn"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:text="+"
+                    android:textSize="18sp"
+                    android:gravity="center"
+                    style="@style/Widget.AppCompat.Button.Borderless"
+                    android:textColor="#2196F3"
+                    android:background="@drawable/btn_circle_outline" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- 取消倒计时按钮（倒计时进行中显示） -->
+        <Button
+            android:id="@+id/cancelCountdownBtn"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:text="取消自动登录"
+            android:textSize="13sp"
+            android:backgroundTint="#FF9800"
+            android:textColor="#FFFFFF"
+            android:visibility="gone"
+            android:layout_marginTop="8dp" />
+    </LinearLayout>
+
+    <!-- 连接按钮 -->
     <Button
         android:id="@+id/connectButton"
         android:layout_width="match_parent"
@@ -70,6 +188,46 @@
         android:backgroundTint="#2196F3"
         android:textColor="#FFFFFF"
         android:layout_margin="16dp"
+        android:layout_marginBottom="4dp"
         android:enabled="false" />
+
+    <!-- ===== 项目信息区（底部小字淡显） ===== -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:padding="8dp"
+        android:paddingBottom="16dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Hermes Studio Mobile"
+            android:textSize="11sp"
+            android:textColor="#BBBBBB" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text=" · "
+            android:textSize="11sp"
+            android:textColor="#BBBBBB" />
+
+        <!-- GitHub 项目超链接按钮（带 GitHub Octocat 图标） -->
+        <TextView
+            android:id="@+id/githubLinkBtn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="GitHub"
+            android:textSize="11sp"
+            android:textColor="#BBBBBB"
+            android:drawablePadding="3dp"
+            android:drawableStart="@drawable/ic_github"
+            android:clickable="true"
+            android:focusable="true"
+            android:background="?selectableItemBackground"
+            android:padding="2dp" />
+    </LinearLayout>
 
 </LinearLayout>
