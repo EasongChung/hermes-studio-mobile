@@ -17,6 +17,17 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 网络状态访问权限（用于检测网络变化） -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 录音权限（语音输入功能必需）
+         WebView 内前端调用 navigator.mediaDevices.getUserMedia({ audio: true })
+         需要此权限才能获取麦克风音频流。 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 音频设置修改权限（TTS 朗读功能辅助）
+         允许 APP 调节音量等音频设置，提升 TTS 体验。 -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- 声明需要使用麦克风硬件（非必需，但 Play Store 据此过滤设备） -->
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="false" />
 
     <application
         android:allowBackup="true"
@@ -28,24 +39,25 @@
         tools:targetApi="34">
 
         <activity
-            android:name=".MainActivity"
+            android:name=".ConfigActivity"
             android:exported="true"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|fontScale|mcc|mnc|touchscreen|navigation"
-            android:hardwareAccelerated="true"
-            android:theme="@style/Theme.HermesStudioMobile.Splash"
-            android:windowSoftInputMode="adjustResize">
-            <!-- LAUNCHER：桌面图标入口 -->
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.HermesStudioMobile">
+            <!-- LAUNCHER：桌面图标入口，每次启动进入服务器设置界面 -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <!-- 服务器配置界面（服务器列表管理） -->
         <activity
-            android:name=".ConfigActivity"
+            android:name=".MainActivity"
             android:exported="false"
-            android:windowSoftInputMode="adjustResize" />
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|fontScale|mcc|mnc|touchscreen|navigation"
+            android:hardwareAccelerated="true"
+            android:theme="@style/Theme.HermesStudioMobile.Splash"
+            android:windowSoftInputMode="adjustResize">
+        </activity>
 
         <!-- 添加/编辑服务器界面 -->
         <activity
