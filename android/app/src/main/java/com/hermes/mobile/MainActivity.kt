@@ -84,9 +84,7 @@ class MainActivity : AppCompatActivity() {
     private var backPressCount = 0
 
     // ===== 语音输入权限相关 =====
-    private companion object {
-        private const val PERMISSION_REQUEST_RECORD_AUDIO = 2001
-    }
+    private val PERMISSION_REQUEST_RECORD_AUDIO = 2001
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
