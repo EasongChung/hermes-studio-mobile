@@ -23,6 +23,9 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.hermes.mobile.cache.ApiCacheManager
+import com.hermes.mobile.cache.CacheKeyBuilder
+import com.hermes.mobile.cache.CacheableApiMatcher
 import com.hermes.mobile.client.HermesChromeClient
 import com.hermes.mobile.config.ServerManager
 import org.json.JSONObject
@@ -53,6 +56,13 @@ class MainActivity : AppCompatActivity() {
         private const val ASSETS_FRONTEND_PATH = "hermes"
         private const val PREFS_NAME = "hermes_startup"
         private const val KEY_FIRST_LAUNCH = "first_launch_completed"
+        // ===== Sprint 8 API 缓存调试开关 =====
+        // 【ENABLE_API_PROBE_LOG】只控制请求观测日志，不改变网络行为。
+        // 【ENABLE_API_RESPONSE_CACHE】控制是否启用透明 API 缓存返回；如出现异常可改为 false 快速回退原网络流程。
+        private const val ENABLE_API_PROBE_LOG = true
+        private const val ENABLE_API_RESPONSE_CACHE = true
+        // Socket.IO polling 写入可能对应聊天发送事件；加冷却避免长轮询/心跳导致缓存频繁清理。
+        private const val SOCKET_MUTATION_INVALIDATE_COOLDOWN_MS = 3000L
 
         // 双击退出参数
         private const val BACK_PRESS_TIMEOUT_MS = 1500L // 1.5 秒内连续按才计数
@@ -68,6 +78,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private lateinit var webView: WebView
+    private lateinit var apiCacheManager: ApiCacheManager
     private var serverUrl: String = ""
     private var serverOrigin: String = ""
     private var loginUsername: String = ""
@@ -76,6 +87,8 @@ class MainActivity : AppCompatActivity() {
     private var authToken: String? = null
     /** 标记是否正在恢复状态（横竖屏切换），避免重复触发加载 */
     private var isRestoringState = false
+    /** 最近一次因 Socket.IO 写入触发缓存失效的时间，用于节流避免频繁清理。 */
+    private var lastSocketMutationInvalidateAtMs = 0L
 
     // ===== 三击退出相关 =====
     /** 记录连续返回键按下的时间戳 */
@@ -118,6 +131,7 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(R.layout.activity_main)
         webView = findViewById(R.id.webView)
+        apiCacheManager = ApiCacheManager(this)
 
         // 如果有保存的 WebView 状态，优先恢复（横竖屏切换后）
         if (savedInstanceState != null && savedInstanceState.getBoolean("webview_has_state", false)) {
@@ -260,6 +274,20 @@ class MainActivity : AppCompatActivity() {
                 val uri = request.url
                 if (!url.startsWith(serverOrigin)) return null
                 val path = uri.path ?: return null
+
+                // Sprint 8 API 观测：只记录方法、路径、query 和缓存候选状态，不读取响应体、不打印 token。
+                // 【为什么需要】透明缓存必须先确认真实会话 API 路径，避免误缓存登录、写操作、文件、WebSocket 等接口。
+                val method = request.method ?: "GET"
+                logApiProbe(method, path, uri.encodedQuery)
+
+                // Sprint 8 缓存失效：会话/消息相关写操作会影响列表排序、最后消息或更新时间，
+                // 因此在请求发出前先清理当前用户缓存，避免后续继续显示旧会话列表。
+                invalidateApiCacheIfNeeded(method, path, uri.encodedQuery)
+
+                // Sprint 8 透明 API 缓存：仅对匹配器确认的会话类 GET 候选生效。
+                // 命中本地缓存时立即返回缓存，同时后台刷新远程数据；未命中则继续原网络流程。
+                tryServeApiCache(method, path, uri.encodedQuery, request.requestHeaders)?.let { return it }
+
                 if (API_PATH_PREFIXES.any { path.startsWith(it) }) return null
                 return tryServeLocalAsset(path)
             }
@@ -368,6 +396,173 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl(serverUrl)
     }
 
+    /**
+     * Sprint 8：尝试返回会话类 API 本地缓存，并后台刷新远程数据。
+     *
+     * 【为什么保守处理用户身份】
+     * 如果用户不是通过原生自动登录进入，Android 层可能不知道 Web 前端当前登录的是哪个账号。
+     * 为避免不同用户共享同一 server 下的会话缓存，这里在无法识别 userIdentity 时直接放行网络请求。
+     */
+    private fun tryServeApiCache(
+        method: String,
+        path: String,
+        query: String?,
+        requestHeaders: Map<String, String>
+    ): WebResourceResponse? {
+        if (!ENABLE_API_RESPONSE_CACHE) return null
+        if (!CacheableApiMatcher.isCacheCandidate(method, path)) return null
+        if (!::apiCacheManager.isInitialized) return null
+
+        val userIdentity = resolveCacheUserIdentity(requestHeaders)
+        if (userIdentity.isBlank()) {
+            Log.d(TAG, "[HermesCache] skip cache: unknown user identity path=$path")
+            return null
+        }
+
+        val pathAndQuery = if (query.isNullOrBlank()) path else "$path?$query"
+        val cacheKey = CacheKeyBuilder.build(serverOrigin, userIdentity, method, path, query)
+        val cached = apiCacheManager.read(cacheKey)
+
+        if (cached != null) {
+            val (entry, body) = cached
+            Log.d(TAG, "[HermesCache] hit path=$pathAndQuery fresh=${entry.isFresh()} size=${body.size}")
+            refreshApiCacheInBackground(method, path, query, cacheKey, userIdentity, requestHeaders)
+            val mimeType = entry.contentType.substringBefore(';').ifBlank { "application/json" }
+            val encoding = entry.contentType.substringAfter("charset=", "UTF-8")
+            return WebResourceResponse(mimeType, encoding, ByteArrayInputStream(body))
+        }
+
+        // 无缓存时不阻塞 WebView 原始请求，只后台预热一次，成功后下次启动/请求即可命中。
+        Log.d(TAG, "[HermesCache] miss path=$pathAndQuery, warmup in background")
+        refreshApiCacheInBackground(method, path, query, cacheKey, userIdentity, requestHeaders)
+        return null
+    }
+
+    /**
+     * 后台刷新 API 缓存。
+     *
+     * 【安全边界】
+     * 只对 GET 候选接口执行；失败只记录日志，不影响当前 WebView 页面。
+     */
+    private fun refreshApiCacheInBackground(
+        method: String,
+        path: String,
+        query: String?,
+        cacheKey: String,
+        userIdentity: String,
+        requestHeaders: Map<String, String>
+    ) {
+        if (!method.equals("GET", ignoreCase = true)) return
+
+        Thread {
+            try {
+                val pathAndQuery = if (query.isNullOrBlank()) path else "$path?$query"
+                val requestUrl = "$serverOrigin$pathAndQuery"
+                val conn = URL(requestUrl).openConnection() as HttpURLConnection
+                conn.requestMethod = "GET"
+                conn.connectTimeout = 10000
+                conn.readTimeout = 15000
+                conn.setRequestProperty("Accept", "application/json")
+                applyForwardHeaders(conn, requestHeaders)
+
+                val responseCode = conn.responseCode
+                if (responseCode != 200) {
+                    Log.d(TAG, "[HermesCache] refresh skip path=$pathAndQuery http=$responseCode")
+                    conn.disconnect()
+                    return@Thread
+                }
+
+                val body = conn.inputStream.readBytes()
+                val contentType = conn.contentType ?: "application/json; charset=utf-8"
+                conn.disconnect()
+
+                val serverHash = CacheKeyBuilder.hashText(serverOrigin)
+                val userHash = CacheKeyBuilder.hashText(userIdentity)
+                val saved = apiCacheManager.write(
+                    cacheKey = cacheKey,
+                    serverHash = serverHash,
+                    userHash = userHash,
+                    method = method,
+                    pathAndQuery = pathAndQuery,
+                    contentType = contentType,
+                    body = body
+                )
+                Log.d(TAG, "[HermesCache] refresh saved=$saved path=$pathAndQuery size=${body.size}")
+            } catch (e: Exception) {
+                Log.w(TAG, "[HermesCache] refresh failed path=$path: ${e.message}")
+            }
+        }.start()
+    }
+
+    /**
+     * 解析用于缓存隔离的用户身份。
+     *
+     * 【为什么要读取请求头】
+     * 自动登录场景下 Android 层有 loginUsername/authToken；但手动登录后，认证信息可能只存在于 WebView 的请求头中。
+     * 这里优先使用原生已知身份，无法获取时再使用 Authorization/Cookie/API Key 的摘要，避免手动登录场景完全无法缓存。
+     *
+     * 【安全要求】
+     * 返回值只作为后续 SHA-256 输入，不直接写文件名；也不打印任何原始认证头。
+     */
+    private fun resolveCacheUserIdentity(requestHeaders: Map<String, String>): String {
+        loginUsername.takeIf { it.isNotBlank() }?.let { return "user:$it" }
+        authToken?.takeIf { it.isNotBlank() }?.let { return "token:${it.take(32)}" }
+
+        val authHeader = getHeaderIgnoreCase(requestHeaders, "Authorization")
+        if (!authHeader.isNullOrBlank()) return "auth:${CacheKeyBuilder.hashText(authHeader)}"
+
+        val cookieHeader = getHeaderIgnoreCase(requestHeaders, "Cookie")
+        if (!cookieHeader.isNullOrBlank()) return "cookie:${CacheKeyBuilder.hashText(cookieHeader)}"
+
+        val apiKeyHeader = getHeaderIgnoreCase(requestHeaders, "X-API-Key")
+            ?: getHeaderIgnoreCase(requestHeaders, "x-api-key")
+        if (!apiKeyHeader.isNullOrBlank()) return "apiKey:${CacheKeyBuilder.hashText(apiKeyHeader)}"
+
+        return ""
+    }
+
+    /**
+     * 向后台刷新请求透传必要请求头。
+     *
+     * 【为什么需要】
+     * 前端真实请求可能使用 Cookie、Authorization 或 X-API-Key 鉴权。
+     * 如果后台刷新不透传这些头，Server 可能返回 401/403，导致缓存无法写入。
+     *
+     * 【安全边界】
+     * 只透传白名单头，不打印头内容，不透传任意自定义头，避免扩大安全面。
+     */
+    private fun applyForwardHeaders(conn: HttpURLConnection, requestHeaders: Map<String, String>) {
+        val allowedHeaders = setOf(
+            "Authorization",
+            "Cookie",
+            "X-API-Key",
+            "x-api-key",
+            "Accept-Language",
+            "User-Agent"
+        )
+
+        allowedHeaders.forEach { headerName ->
+            val value = getHeaderIgnoreCase(requestHeaders, headerName)
+            if (!value.isNullOrBlank()) {
+                conn.setRequestProperty(headerName, value)
+            }
+        }
+
+        // 自动登录场景兜底：如果前端请求头里没有 Authorization，但原生层有 token，则补 Bearer。
+        if (getHeaderIgnoreCase(requestHeaders, "Authorization").isNullOrBlank()) {
+            authToken?.takeIf { it.isNotBlank() }?.let { token ->
+                conn.setRequestProperty("Authorization", "Bearer $token")
+            }
+        }
+    }
+
+    /**
+     * 忽略大小写读取请求头。
+     */
+    private fun getHeaderIgnoreCase(headers: Map<String, String>, name: String): String? {
+        return headers.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
+    }
+
     private fun tryServeLocalAsset(path: String): WebResourceResponse? {
         val assetPath = when {
             path == "/" || path.isEmpty() -> "$ASSETS_FRONTEND_PATH/index.html"
@@ -446,6 +641,31 @@ class MainActivity : AppCompatActivity() {
         if (schemeEnd < 0) return normalized
         val pathStart = normalized.indexOf('/', schemeEnd + 3)
         return if (pathStart >= 0) normalized.substring(0, pathStart) else normalized
+    }
+
+    /**
+     * Sprint 8：记录 WebView 发起的 API 请求观测日志。
+     *
+     * 【为什么需要】
+     * 会话本地缓存不能盲目拦截所有 /api/ 请求。先通过轻量日志确认启动阶段和会话页实际请求路径，
+     * 再把确认安全的会话列表类 GET 接口加入缓存白名单。
+     *
+     * 【安全要求】
+     * 这里只打印 method、path、query 是否存在、候选状态，不打印请求头、token、密码、响应体或会话正文。
+     */
+    private fun logApiProbe(method: String, path: String, query: String?) {
+        if (!ENABLE_API_PROBE_LOG) return
+
+        val isApiPath = CacheableApiMatcher.isApiPath(path)
+        if (!isApiPath) return
+
+        val isCacheCandidate = CacheableApiMatcher.isCacheCandidate(method, path)
+        val queryState = if (query.isNullOrBlank()) "no-query" else "has-query"
+
+        Log.d(
+            TAG,
+            "[HermesCacheProbe] method=$method path=$path query=$queryState cacheCandidate=$isCacheCandidate"
+        )
     }
 
     private fun injectJs(js: String) {
@@ -586,11 +806,74 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
+        // 清理原生 API 响应缓存。
+        // 【为什么需要】Sprint 8 新增的会话 API 缓存写在 App 私有 files/api_cache，
+        //              不属于 WebView localStorage/cache，退出登录时必须单独清理，避免敏感会话记录残留。
+        clearCurrentUserApiCache()
+
         // 跳转到服务器设置界面
         val intent = Intent(this, ConfigActivity::class.java)
         intent.flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
         startActivity(intent)
         finish()
+    }
+
+    /**
+     * 会话相关写操作发生时清理当前用户 API 缓存。
+     *
+     * 【为什么需要】
+     * 发送消息、创建/删除会话会改变会话列表的最后消息、更新时间或排序。
+     * 如果不清理缓存，后续启动可能继续显示旧列表。
+     */
+    private fun invalidateApiCacheIfNeeded(method: String, path: String, query: String?) {
+        if (!ENABLE_API_RESPONSE_CACHE) return
+
+        if (CacheableApiMatcher.isConversationMutation(method, path)) {
+            Log.d(TAG, "[HermesCache] invalidate by mutation method=$method path=$path")
+            clearCurrentUserApiCache()
+            return
+        }
+
+        // Socket.IO 是 Web 端聊天发送的主通道。这里仅对 POST /socket.io/?transport=polling 做保守失效，
+        // 并设置短冷却窗口，避免 polling 心跳或连续事件导致频繁清理缓存。
+        if (CacheableApiMatcher.isSocketIoPollingMutation(method, path, query)) {
+            val now = System.currentTimeMillis()
+            if (now - lastSocketMutationInvalidateAtMs < SOCKET_MUTATION_INVALIDATE_COOLDOWN_MS) {
+                Log.d(TAG, "[HermesCache] skip socket invalidate by cooldown path=$path")
+                return
+            }
+            lastSocketMutationInvalidateAtMs = now
+            Log.d(TAG, "[HermesCache] invalidate by socket mutation path=$path")
+            clearCurrentUserApiCache()
+        }
+    }
+
+    /**
+     * 清理当前 server + user 维度的原生 API 缓存。
+     *
+     * 【为什么需要】
+     * API 缓存不属于 WebView 数据，退出登录时如果不清理，会在 App 私有目录中残留历史会话响应。
+     * 为避免误删其他账号/服务器缓存，这里只在能识别当前用户身份时清理对应维度。
+     */
+    private fun clearCurrentUserApiCache() {
+        if (!::apiCacheManager.isInitialized) return
+
+        val serverHash = CacheKeyBuilder.hashText(serverOrigin)
+        val userIdentity = when {
+            loginUsername.isNotBlank() -> "user:$loginUsername"
+            !authToken.isNullOrBlank() -> "token:${authToken!!.take(32)}"
+            else -> ""
+        }
+        if (userIdentity.isBlank()) {
+            // 手动登录场景可能无法还原具体 userIdentity。为了隐私优先，退化为清理当前服务器全部缓存。
+            apiCacheManager.clearForServer(serverHash)
+            Log.d(TAG, "[HermesCache] cleared current server cache because user identity is unknown")
+            return
+        }
+
+        val userHash = CacheKeyBuilder.hashText(userIdentity)
+        apiCacheManager.clearFor(serverHash, userHash)
+        Log.d(TAG, "[HermesCache] cleared current user cache")
     }
 
     /**
