@@ -75,9 +75,11 @@
         android:layout_marginStart="12dp"
         android:layout_marginEnd="12dp"
         android:layout_marginBottom="4dp"
-        android:visibility="gone">
+        android:visibility="visible">
 
-        <!-- 开关行：倒计时自动登录 -->
+        <!-- 开关行：倒计时自动登录
+             【为什么始终可见】R37 实测发现旧版把开关放在默认 gone 的区域内，
+             导致用户无法看到入口，也就无法开启倒计时自动登录。 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -92,7 +94,7 @@
                 android:textSize="14sp"
                 android:textColor="#333333" />
 
-            <!-- 倒计时显示 -->
+            <!-- 倒计时显示：仅倒计时进行中显示，平时隐藏，避免干扰开关入口。 -->
             <TextView
                 android:id="@+id/countdownText"
                 android:layout_width="wrap_content"
@@ -109,13 +111,16 @@
                 android:layout_height="wrap_content" />
         </LinearLayout>
 
-        <!-- 倒计时秒数设置 -->
+        <!-- 倒计时秒数设置：开关开启后显示，关闭时隐藏。
+             【为什么单独加 id】代码只控制高级设置行显隐，开关行保持可见。 -->
         <LinearLayout
+            android:id="@+id/countdownSettingsRow"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:layout_marginTop="8dp">
+            android:layout_marginTop="8dp"
+            android:visibility="gone">
 
             <TextView
                 android:layout_width="0dp"
