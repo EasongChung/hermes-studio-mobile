@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Bundle
 import android.os.CountDownTimer
+import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -38,6 +39,7 @@ class ConfigActivity : AppCompatActivity() {
     // 倒计时自动登录相关
     private lateinit var autoLoginSection: LinearLayout
     private lateinit var autoLoginSwitch: SwitchCompat
+    private lateinit var countdownSettingsRow: LinearLayout
     private lateinit var countdownText: TextView
     private lateinit var countdownDurationText: TextView
     private lateinit var countdownMinusBtn: Button
@@ -77,6 +79,7 @@ class ConfigActivity : AppCompatActivity() {
         // 倒计时区域
         autoLoginSection = findViewById(R.id.autoLoginSection)
         autoLoginSwitch = findViewById(R.id.autoLoginSwitch)
+        countdownSettingsRow = findViewById(R.id.countdownSettingsRow)
         countdownText = findViewById(R.id.countdownText)
         countdownDurationText = findViewById(R.id.countdownDurationText)
         countdownMinusBtn = findViewById(R.id.countdownMinusBtn)
@@ -210,13 +213,24 @@ class ConfigActivity : AppCompatActivity() {
     }
 
     /**
-     * 更新倒计时设置区的显示/隐藏
+     * 更新倒计时设置区的显示状态。
+     *
+     * 【为什么这样做】
+     * R37 实测发现旧实现把 autoLoginSection 整块设为 gone，
+     * 而开关 autoLoginSwitch 又放在 autoLoginSection 内部，导致用户看不到入口。
+     * 因此这里固定显示外层区域和开关行，只根据开关状态显示/隐藏“倒计时秒数设置”这类高级选项。
      */
     private fun updateAutoLoginSectionVisibility() {
-        autoLoginSection.visibility = if (autoLoginSwitch.isChecked) {
-            android.view.View.VISIBLE
-        } else {
-            android.view.View.GONE
+        // 外层区域必须始终可见，否则用户无法看到并开启“倒计时自动登录”开关。
+        autoLoginSection.visibility = View.VISIBLE
+
+        val enabled = autoLoginSwitch.isChecked
+        countdownSettingsRow.visibility = if (enabled) View.VISIBLE else View.GONE
+
+        // 开关关闭时，倒计时显示和取消按钮也必须隐藏，避免界面残留旧状态。
+        if (!enabled && !isCountdownActive) {
+            countdownText.visibility = View.GONE
+            cancelCountdownBtn.visibility = View.GONE
         }
     }
 
