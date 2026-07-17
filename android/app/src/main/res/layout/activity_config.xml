@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- activity_config.xml - 服务器列表管理界面（APP 启动首页）
-     设计方向：Hermes 深色指挥台
-     - 深色渐变背景 + 浮层卡片
-     - 强调色 #E94560 与主色 #1A1A2E
+     设计方向：跟随系统浅/深主题的 Hermes 原生设置页
+     - 低对比渐变背景 + 浮层卡片
+     - 语义色资源自动适配系统白色/黑色主题
      - 倒计时自动登录可开关，秒数 2~15
      - 自动登录进行中时主按钮切换为「取消自动登录」 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -235,7 +235,7 @@
         android:textSize="16sp"
         android:textStyle="bold"
         android:textAllCaps="false"
-        android:textColor="@color/hermes_text_primary"
+        android:textColor="@color/hermes_on_action"
         android:background="@drawable/bg_btn_connect"
         android:stateListAnimator="@null"
         android:layout_marginStart="16dp"

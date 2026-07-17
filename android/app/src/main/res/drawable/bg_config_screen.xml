@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 服务器设置页背景：深色渐变底 + 轻微层次 -->
+<!-- 服务器设置页背景：跟随系统浅/深主题的低对比渐变底 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
     <gradient
         android:angle="160"
-        android:startColor="#12121F"
-        android:centerColor="#1A1A2E"
-        android:endColor="#16162A"
+        android:startColor="@color/hermes_page_bg_start"
+        android:centerColor="@color/hermes_page_bg_center"
+        android:endColor="@color/hermes_page_bg_end"
         android:type="linear" />
 </shape>

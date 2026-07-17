@@ -439,7 +439,7 @@ class MainActivity : AppCompatActivity() {
         if (cached != null) {
             val (entry, body) = cached
             Log.d(TAG, "[HermesCache] hit path=$pathAndQuery fresh=${entry.isFresh()} size=${body.size}")
-            // 缓存命中：立即返回旧数据；后台同步若发现变化，则在 20 秒窗口内触发一次前端局部刷新。
+            // 缓存命中：立即返回 last-known-good 数据；后台同步若发现变化，则在启动窗口内触发一次前端局部刷新。
             refreshApiCacheInBackground(
                 method = method,
                 path = path,
@@ -914,10 +914,17 @@ class MainActivity : AppCompatActivity() {
      *
      * 【为什么需要】
      * 发送消息、创建/删除会话会改变会话列表的最后消息、更新时间或排序。
-     * 如果不清理缓存，后续启动可能继续显示旧列表。
+     * 聊天 run 只做软失效：保留 last-known-good 缓存用于下次冷启动首屏，同时触发局部刷新。
+     * 删除/归档/重命名等明确会话管理操作仍清理缓存，避免长期显示已删除或结构变更后的旧列表。
      */
     private fun invalidateApiCacheIfNeeded(method: String, path: String, query: String?) {
         if (!ENABLE_API_RESPONSE_CACHE) return
+
+        if (CacheableApiMatcher.isSoftConversationMutation(method, path)) {
+            Log.d(TAG, "[HermesCache] soft mutation observed, keep last-known-good cache method=$method path=$path")
+            maybeTriggerSessionListSoftRefresh(path)
+            return
+        }
 
         if (CacheableApiMatcher.isConversationMutation(method, path)) {
             Log.d(TAG, "[HermesCache] invalidate by mutation method=$method path=$path")

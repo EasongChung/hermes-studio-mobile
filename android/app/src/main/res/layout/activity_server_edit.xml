@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- activity_server_edit.xml - 添加/编辑服务器界面（深色指挥台风格） -->
+<!-- activity_server_edit.xml - 添加/编辑服务器界面（跟随系统浅/深主题） -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
@@ -151,7 +151,7 @@
             android:textSize="16sp"
             android:textStyle="bold"
             android:textAllCaps="false"
-            android:textColor="@color/hermes_text_primary"
+            android:textColor="@color/hermes_on_action"
             android:background="@drawable/bg_btn_connect"
             android:stateListAnimator="@null" />
 
@@ -163,7 +163,7 @@
             android:textSize="16sp"
             android:textStyle="bold"
             android:textAllCaps="false"
-            android:textColor="@color/hermes_text_primary"
+            android:textColor="@color/hermes_on_action"
             android:background="@drawable/bg_btn_stop_autologin"
             android:stateListAnimator="@null"
             android:layout_marginTop="12dp"

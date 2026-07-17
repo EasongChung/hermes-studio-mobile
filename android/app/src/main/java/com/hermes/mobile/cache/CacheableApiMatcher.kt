@@ -46,15 +46,20 @@ object CacheableApiMatcher {
      *
      * 【注意】Socket.IO 的 /chat-run 发送消息不作为缓存候选；如后续要根据 socket 写入事件失效缓存，
      * 应在 MainActivity 中单独审慎处理，避免心跳/轮询导致缓存过度清理。
+     *
+     * 【软失效】POST /api/chat-run/runs 会改变会话排序/最后消息，但不应删除启动缓存。
+     * Android 继续保留 last-known-good 响应用于下次冷启动首屏，并触发局部刷新同步最新服务端状态。
      */
     private data class MutationRule(
         val method: String,
         val pathRegex: Regex
     )
 
-    private val mutationRules = listOf(
-        MutationRule("POST", Regex("^/api/chat-run/runs$")),
+    private val softMutationRules = listOf(
+        MutationRule("POST", Regex("^/api/chat-run/runs$"))
+    )
 
+    private val mutationRules = listOf(
         MutationRule("DELETE", Regex("^/api/hermes/sessions/[^/]+$")),
         MutationRule("POST", Regex("^/api/hermes/sessions/batch-delete$")),
         MutationRule("POST", Regex("^/api/hermes/sessions/[^/]+/rename$")),
@@ -102,6 +107,22 @@ object CacheableApiMatcher {
 
         // 使用精确白名单，避免误缓存会话详情、消息正文、上下文、usage、搜索、文件、WebSocket 等接口。
         return normalizedPath in cacheableGetPaths
+    }
+
+    /**
+     * 判断某个写操作是否只应让会话缓存软失效。
+     *
+     * 软失效不物理删除 last-known-good 响应，避免下次 App 冷启动没有缓存可展示，
+     * 但调用方应尽快触发局部刷新，让前端同步服务端最新会话列表。
+     */
+    fun isSoftConversationMutation(method: String, path: String): Boolean {
+        val normalizedMethod = method.trim().uppercase(Locale.ROOT)
+        if (normalizedMethod !in setOf("POST", "PUT", "PATCH", "DELETE")) return false
+
+        val normalizedPath = normalizePath(path)
+        return softMutationRules.any { rule ->
+            rule.method == normalizedMethod && rule.pathRegex.matches(normalizedPath)
+        }
     }
 
     /**
