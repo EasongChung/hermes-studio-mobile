@@ -20,15 +20,24 @@ import java.util.Locale
 object CacheableApiMatcher {
 
     /**
-     * 首批允许透明缓存的精确 GET 路径。
+     * 允许透明缓存的精确 GET 路径。
      *
-     * 【为什么只放这一个】
-     * /api/hermes/sessions/conversations 是后端已确认的会话摘要列表接口，
-     * 默认 limit=200，适合启动阶段快速展示；消息详情、上下文、usage/search 等接口暂不缓存，避免隐私、体积和一致性风险。
+     * 【主聊天页】
+     * /api/hermes/sessions 是 ChatView/ChatStore.loadSessions → fetchSessions 的真实接口，
+     * 也是启动后侧边栏会话列表的主要数据源。query（source/profile）参与 cache key，不在此处展开。
+     *
+     * 【会话监控面板】
+     * /api/hermes/sessions/conversations 由 ConversationMonitorPane 使用，保留缓存以加速该面板。
+     *
+     * 【明确不缓存】
+     * /api/hermes/sessions/:id、messages、context、usage、search、workspace-file 等动态/敏感接口。
+     * 这里用精确 path 集合匹配，不会误命中 /api/hermes/sessions/xxx。
      */
+    private const val SESSION_LIST_PATH = "/api/hermes/sessions"
     private const val CONVERSATION_SUMMARY_PATH = "/api/hermes/sessions/conversations"
 
     private val cacheableGetPaths = setOf(
+        SESSION_LIST_PATH,
         CONVERSATION_SUMMARY_PATH
     )
 
