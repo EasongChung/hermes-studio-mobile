@@ -1,9 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Hermes 深紫色主题色 -->
+    <!-- Hermes 深色指挥台主题 -->
     <color name="hermes_primary">#1A1A2E</color>
     <color name="hermes_primary_dark">#0F0F1A</color>
     <color name="hermes_accent">#E94560</color>
+    <color name="hermes_accent_soft">#FF6B81</color>
+    <color name="hermes_surface">#22223A</color>
+    <color name="hermes_surface_elevated">#2C2C48</color>
+    <color name="hermes_surface_selected">#33263A</color>
+    <color name="hermes_border">#3A3A58</color>
+    <color name="hermes_text_primary">#F4F4F8</color>
+    <color name="hermes_text_secondary">#A8A8C0</color>
+    <color name="hermes_text_muted">#7A7A96</color>
+    <color name="hermes_success">#3DDC97</color>
+    <color name="hermes_warning">#FFB020</color>
+    <color name="hermes_connect">#4C6FFF</color>
+    <color name="hermes_connect_pressed">#3B57D6</color>
     <!-- Splash 背景色 -->
     <color name="splash_background">#1A1A2E</color>
 </resources>

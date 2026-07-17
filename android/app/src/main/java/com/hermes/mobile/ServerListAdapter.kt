@@ -4,6 +4,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
+import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.RecyclerView
 import com.hermes.mobile.config.ServerEntry
 
@@ -24,9 +25,6 @@ class ServerListAdapter(
     private val onItemLongClick: (ServerEntry) -> Unit
 ) : RecyclerView.Adapter<ServerListAdapter.ViewHolder>() {
 
-    /**
-     * ViewHolder - 列表项视图持有者
-     */
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
         val selectedIndicator: TextView = view.findViewById(R.id.selectedIndicator)
         val serverName: TextView = view.findViewById(R.id.serverName)
@@ -42,20 +40,30 @@ class ServerListAdapter(
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val server = servers[position]
         val isSelected = server.id == selectedId
+        val context = holder.itemView.context
 
-        // 服务器信息
         holder.serverName.text = server.name
         holder.serverUrl.text = server.url
+        holder.itemView.isSelected = isSelected
 
-        // 选中指示器
         holder.selectedIndicator.text = if (isSelected) "●" else "○"
+        holder.selectedIndicator.setTextColor(
+            ContextCompat.getColor(
+                context,
+                if (isSelected) R.color.hermes_accent_soft else R.color.hermes_text_muted
+            )
+        )
+        holder.serverName.setTextColor(
+            ContextCompat.getColor(
+                context,
+                if (isSelected) R.color.hermes_text_primary else R.color.hermes_text_primary
+            )
+        )
 
-        // 点击选中
         holder.itemView.setOnClickListener {
             onItemClick(server)
         }
 
-        // 长按编辑
         holder.itemView.setOnLongClickListener {
             onItemLongClick(server)
             true
@@ -64,9 +72,6 @@ class ServerListAdapter(
 
     override fun getItemCount(): Int = servers.size
 
-    /**
-     * 更新数据
-     */
     fun updateData(newServers: List<ServerEntry>, newSelectedId: String?) {
         servers = newServers
         selectedId = newSelectedId

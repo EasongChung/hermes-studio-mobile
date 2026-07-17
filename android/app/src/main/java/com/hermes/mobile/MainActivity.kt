@@ -114,6 +114,8 @@ class MainActivity : AppCompatActivity() {
         // 从 Splash 主题切回正常主题（消除启动背景）
         setTheme(R.style.Theme_HermesStudioMobile)
         super.onCreate(savedInstanceState)
+        // 小屏手机锁定竖屏；平板/大屏保持自由方向。
+        ScreenOrientationHelper.lockPortraitOnPhone(this)
 
         // 从 Intent 获取服务器 URL 和登录凭据
         serverUrl = intent.getStringExtra("server_url") ?: ""

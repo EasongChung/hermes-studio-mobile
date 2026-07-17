@@ -1,45 +1,68 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- activity_config.xml - 服务器列表管理界面（也是APP启动首页）
-     显示所有已添加的服务器，支持选择、添加、编辑、删除。
-     功能包括：
-     1. 服务器列表管理
-     2. 倒计时自动登录（可开关、自定义倒计时秒数）
-     3. 项目信息与GitHub链接（底部小字淡显） -->
+<!-- activity_config.xml - 服务器列表管理界面（APP 启动首页）
+     设计方向：Hermes 深色指挥台
+     - 深色渐变背景 + 浮层卡片
+     - 强调色 #E94560 与主色 #1A1A2E
+     - 倒计时自动登录可开关，秒数 2~15
+     - 自动登录进行中时主按钮切换为「取消自动登录」 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="#F5F5F5">
+    android:background="@drawable/bg_config_screen">
 
     <!-- 顶部标题栏 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:padding="16dp"
+        android:paddingStart="20dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="20dp"
+        android:paddingBottom="18dp"
         android:gravity="center_vertical"
-        android:background="#FFFFFF">
+        android:background="@drawable/bg_config_header"
+        android:elevation="6dp">
 
-        <TextView
+        <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="服务器管理"
-            android:textSize="20sp"
-            android:textColor="#1A1A1A"
-            android:textStyle="bold" />
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="服务器设置"
+                android:textSize="22sp"
+                android:textColor="@color/hermes_text_primary"
+                android:textStyle="bold"
+                android:letterSpacing="0.02" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="选择服务器后连接，或开启倒计时自动进入"
+                android:textSize="12sp"
+                android:textColor="@color/hermes_text_secondary" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/addServerBtn"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="+ 添加"
-            android:textSize="15sp"
-            android:textColor="#2196F3"
-            android:padding="8dp"
+            android:textSize="14sp"
+            android:textColor="@color/hermes_accent_soft"
+            android:textStyle="bold"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
             android:clickable="true"
             android:focusable="true"
-            android:background="?selectableItemBackground" />
+            android:background="@drawable/bg_add_chip" />
     </LinearLayout>
 
     <!-- 服务器列表区域 -->
@@ -49,7 +72,10 @@
         android:layout_height="0dp"
         android:layout_weight="1"
         android:clipToPadding="false"
-        android:padding="12dp" />
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="16dp"
+        android:paddingBottom="8dp" />
 
     <!-- 空状态提示 -->
     <TextView
@@ -58,11 +84,12 @@
         android:layout_height="0dp"
         android:layout_weight="1"
         android:gravity="center"
-        android:text="暂无服务器\n点击右上角「+ 添加」添加服务器"
+        android:text="暂无服务器\n点击右上角「+ 添加」配置第一台 Hermes 服务器"
         android:textSize="14sp"
-        android:textColor="#999999"
+        android:textColor="@color/hermes_text_muted"
         android:visibility="visible"
-        android:lineSpacingExtra="4dp" />
+        android:lineSpacingExtra="6dp"
+        android:padding="24dp" />
 
     <!-- ===== 倒计时自动登录设置区 ===== -->
     <LinearLayout
@@ -70,40 +97,61 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="12dp"
-        android:background="#FFFFFF"
-        android:layout_marginStart="12dp"
-        android:layout_marginEnd="12dp"
-        android:layout_marginBottom="4dp"
+        android:padding="16dp"
+        android:background="@drawable/bg_card_surface"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="8dp"
+        android:elevation="2dp"
         android:visibility="visible">
 
-        <!-- 开关行：倒计时自动登录
-             【为什么始终可见】R37 实测发现旧版把开关放在默认 gone 的区域内，
-             导致用户无法看到入口，也就无法开启倒计时自动登录。 -->
+        <!-- 开关行：倒计时自动登录（始终可见） -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical">
 
-            <TextView
+            <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="倒计时自动登录"
-                android:textSize="14sp"
-                android:textColor="#333333" />
+                android:orientation="vertical">
 
-            <!-- 倒计时显示：仅倒计时进行中显示，平时隐藏，避免干扰开关入口。 -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="倒计时自动登录"
+                    android:textSize="15sp"
+                    android:textColor="@color/hermes_text_primary"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="开启后将自动连接当前选中的服务器"
+                    android:textSize="11sp"
+                    android:textColor="@color/hermes_text_muted" />
+            </LinearLayout>
+
+            <!-- 倒计时显示：仅倒计时进行中显示 -->
             <TextView
                 android:id="@+id/countdownText"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:textSize="18sp"
-                android:textColor="#2196F3"
+                android:minWidth="48dp"
+                android:gravity="center"
+                android:textSize="14sp"
+                android:textColor="@color/hermes_accent_soft"
                 android:textStyle="bold"
                 android:visibility="gone"
-                android:layout_marginEnd="12dp" />
+                android:layout_marginEnd="10dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp"
+                android:background="@drawable/bg_countdown_badge" />
 
             <androidx.appcompat.widget.SwitchCompat
                 android:id="@+id/autoLoginSwitch"
@@ -111,24 +159,23 @@
                 android:layout_height="wrap_content" />
         </LinearLayout>
 
-        <!-- 倒计时秒数设置：开关开启后显示，关闭时隐藏。
-             【为什么单独加 id】代码只控制高级设置行显隐，开关行保持可见。 -->
+        <!-- 倒计时秒数设置：开关开启后显示，范围 2~15 秒 -->
         <LinearLayout
             android:id="@+id/countdownSettingsRow"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="14dp"
             android:visibility="gone">
 
             <TextView
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="倒计时长（秒）"
+                android:text="倒计时长（2~15 秒）"
                 android:textSize="12sp"
-                android:textColor="#999999" />
+                android:textColor="@color/hermes_text_secondary" />
 
             <LinearLayout
                 android:layout_width="wrap_content"
@@ -138,71 +185,74 @@
 
                 <Button
                     android:id="@+id/countdownMinusBtn"
-                    android:layout_width="36dp"
-                    android:layout_height="36dp"
-                    android:text="-"
-                    android:textSize="18sp"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:text="−"
+                    android:textSize="20sp"
                     android:gravity="center"
                     style="@style/Widget.AppCompat.Button.Borderless"
-                    android:textColor="#2196F3"
+                    android:textColor="@color/hermes_accent_soft"
                     android:background="@drawable/btn_circle_outline" />
 
                 <TextView
                     android:id="@+id/countdownDurationText"
-                    android:layout_width="48dp"
+                    android:layout_width="52dp"
                     android:layout_height="wrap_content"
                     android:gravity="center"
                     android:text="5"
-                    android:textSize="16sp"
-                    android:textColor="#1A1A1A"
+                    android:textSize="18sp"
+                    android:textColor="@color/hermes_text_primary"
                     android:textStyle="bold" />
 
                 <Button
                     android:id="@+id/countdownPlusBtn"
-                    android:layout_width="36dp"
-                    android:layout_height="36dp"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
                     android:text="+"
-                    android:textSize="18sp"
+                    android:textSize="20sp"
                     android:gravity="center"
                     style="@style/Widget.AppCompat.Button.Borderless"
-                    android:textColor="#2196F3"
+                    android:textColor="@color/hermes_accent_soft"
                     android:background="@drawable/btn_circle_outline" />
             </LinearLayout>
         </LinearLayout>
 
-        <!-- 取消倒计时按钮（倒计时进行中显示） -->
+        <!-- 兼容旧逻辑保留（默认隐藏，主按钮已承担「取消自动登录」） -->
         <Button
             android:id="@+id/cancelCountdownBtn"
             android:layout_width="match_parent"
-            android:layout_height="40dp"
+            android:layout_height="0dp"
             android:text="取消自动登录"
-            android:textSize="13sp"
-            android:backgroundTint="#FF9800"
-            android:textColor="#FFFFFF"
-            android:visibility="gone"
-            android:layout_marginTop="8dp" />
+            android:visibility="gone" />
     </LinearLayout>
 
-    <!-- 连接按钮 -->
+    <!-- 连接 / 取消自动登录 按钮 -->
     <Button
         android:id="@+id/connectButton"
         android:layout_width="match_parent"
         android:layout_height="56dp"
         android:text="连接当前服务器"
         android:textSize="16sp"
-        android:backgroundTint="#2196F3"
-        android:textColor="#FFFFFF"
-        android:layout_margin="16dp"
-        android:layout_marginBottom="4dp"
+        android:textStyle="bold"
+        android:textAllCaps="false"
+        android:textColor="@color/hermes_text_primary"
+        android:background="@drawable/bg_btn_connect"
+        android:stateListAnimator="@null"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginTop="4dp"
+        android:layout_marginBottom="8dp"
         android:enabled="false" />
 
-    <!-- ===== 项目信息区（底部小字淡显） ===== -->
+    <!-- ===== 项目信息区 ===== -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center"
-        android:padding="8dp"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:paddingTop="4dp"
         android:paddingBottom="16dp">
 
         <TextView
@@ -210,23 +260,22 @@
             android:layout_height="wrap_content"
             android:text="Hermes Studio Mobile"
             android:textSize="11sp"
-            android:textColor="#BBBBBB" />
+            android:textColor="@color/hermes_text_muted" />
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text=" · "
             android:textSize="11sp"
-            android:textColor="#BBBBBB" />
+            android:textColor="@color/hermes_text_muted" />
 
-        <!-- GitHub 项目超链接按钮（带 GitHub Octocat 图标） -->
         <TextView
             android:id="@+id/githubLinkBtn"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="GitHub"
             android:textSize="11sp"
-            android:textColor="#BBBBBB"
+            android:textColor="@color/hermes_text_secondary"
             android:drawablePadding="3dp"
             android:drawableStart="@drawable/ic_github"
             android:clickable="true"
