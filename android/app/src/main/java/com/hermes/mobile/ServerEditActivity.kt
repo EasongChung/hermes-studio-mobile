@@ -23,6 +23,7 @@ class ServerEditActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ScreenOrientationHelper.lockPortraitOnPhone(this)
         setContentView(R.layout.activity_server_edit)
 
         serverManager = ServerManager(this)

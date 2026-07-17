@@ -1,146 +1,171 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- activity_server_edit.xml - 添加/编辑服务器界面 -->
+<!-- activity_server_edit.xml - 添加/编辑服务器界面（跟随系统浅/深主题） -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#F5F5F5">
+    android:background="@drawable/bg_config_screen"
+    android:fillViewport="true">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:padding="24dp"
-        android:layout_marginTop="48dp">
+        android:layout_marginTop="24dp">
 
-        <!-- 标题 -->
         <TextView
             android:id="@+id/formTitle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="添加服务器"
             android:textSize="24sp"
-            android:textColor="#1A1A1A"
+            android:textColor="@color/hermes_text_primary"
             android:textStyle="bold"
-            android:layout_marginBottom="24dp" />
+            android:layout_marginBottom="8dp" />
 
-        <!-- 服务器名称 -->
-        <com.google.android.material.textfield.TextInputLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="服务器名称"
-            style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
-
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/nameInput"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:inputType="text"
-                android:text="我的服务器" />
-
-        </com.google.android.material.textfield.TextInputLayout>
-
-        <!-- 服务器地址 -->
-        <com.google.android.material.textfield.TextInputLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="服务器地址"
-            android:layout_marginTop="16dp"
-            style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
-
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/urlInput"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:inputType="textUri"
-                android:text="http://" />
-
-        </com.google.android.material.textfield.TextInputLayout>
-
-        <!-- 分隔提示 -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="— 登录凭据（可选，填后可自动登录跳过 WebUI 登录页） —"
+            android:text="填写 Hermes Studio 服务地址，可选填登录凭据以跳过 WebUI 登录页"
             android:textSize="12sp"
-            android:textColor="#999999"
-            android:gravity="center"
-            android:layout_marginTop="20dp"
-            android:layout_marginBottom="8dp" />
+            android:textColor="@color/hermes_text_secondary"
+            android:layout_marginBottom="20dp" />
 
-        <!-- 用户名 -->
-        <com.google.android.material.textfield.TextInputLayout
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="用户名（可选）"
-            style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
+            android:orientation="vertical"
+            android:background="@drawable/bg_card_surface"
+            android:padding="16dp">
 
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/usernameInput"
+            <com.google.android.material.textfield.TextInputLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:inputType="text"
-                android:text="" />
+                android:hint="服务器名称"
+                android:textColorHint="@color/hermes_text_muted"
+                app:boxStrokeColor="@color/hermes_accent"
+                app:hintTextColor="@color/hermes_accent_soft"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
 
-        </com.google.android.material.textfield.TextInputLayout>
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/nameInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="text"
+                    android:textColor="@color/hermes_text_primary"
+                    android:text="我的服务器" />
+            </com.google.android.material.textfield.TextInputLayout>
 
-        <!-- 密码 -->
-        <com.google.android.material.textfield.TextInputLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="密码（可选）"
-            android:layout_marginTop="12dp"
-            style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-            app:passwordToggleEnabled="true">
-
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/passwordInput"
+            <com.google.android.material.textfield.TextInputLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:inputType="textPassword"
-                android:text="" />
+                android:hint="服务器地址"
+                android:layout_marginTop="16dp"
+                android:textColorHint="@color/hermes_text_muted"
+                app:boxStrokeColor="@color/hermes_accent"
+                app:hintTextColor="@color/hermes_accent_soft"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
 
-        </com.google.android.material.textfield.TextInputLayout>
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/urlInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textUri"
+                    android:textColor="@color/hermes_text_primary"
+                    android:text="http://" />
+            </com.google.android.material.textfield.TextInputLayout>
 
-        <!-- 错误提示 -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="— 登录凭据（可选） —"
+                android:textSize="12sp"
+                android:textColor="@color/hermes_text_muted"
+                android:gravity="center"
+                android:layout_marginTop="20dp"
+                android:layout_marginBottom="8dp" />
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="用户名（可选）"
+                android:textColorHint="@color/hermes_text_muted"
+                app:boxStrokeColor="@color/hermes_accent"
+                app:hintTextColor="@color/hermes_accent_soft"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/usernameInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="text"
+                    android:textColor="@color/hermes_text_primary"
+                    android:text="" />
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="密码（可选）"
+                android:layout_marginTop="12dp"
+                android:textColorHint="@color/hermes_text_muted"
+                app:boxStrokeColor="@color/hermes_accent"
+                app:hintTextColor="@color/hermes_accent_soft"
+                app:passwordToggleEnabled="true"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/passwordInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textPassword"
+                    android:textColor="@color/hermes_text_primary"
+                    android:text="" />
+            </com.google.android.material.textfield.TextInputLayout>
+        </LinearLayout>
+
         <TextView
             android:id="@+id/errorText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textColor="#D32F2F"
+            android:textColor="@color/hermes_accent"
             android:textSize="13sp"
             android:visibility="gone"
-            android:layout_marginTop="8dp" />
+            android:layout_marginTop="12dp" />
 
-        <!-- 使用提示 -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="提示：通常为 http://IP:端口号（如 http://192.168.1.100:8648）"
             android:textSize="12sp"
-            android:textColor="#999999"
+            android:textColor="@color/hermes_text_muted"
             android:layout_marginTop="16dp"
-            android:layout_marginBottom="32dp" />
+            android:layout_marginBottom="24dp" />
 
-        <!-- 保存按钮 -->
         <Button
             android:id="@+id/saveButton"
             android:layout_width="match_parent"
             android:layout_height="56dp"
             android:text="保存"
             android:textSize="16sp"
-            android:backgroundTint="#2196F3"
-            android:textColor="#FFFFFF" />
+            android:textStyle="bold"
+            android:textAllCaps="false"
+            android:textColor="@color/hermes_on_action"
+            android:background="@drawable/bg_btn_connect"
+            android:stateListAnimator="@null" />
 
-        <!-- 删除按钮（编辑模式显示） -->
         <Button
             android:id="@+id/deleteButton"
             android:layout_width="match_parent"
             android:layout_height="56dp"
             android:text="删除此服务器"
             android:textSize="16sp"
-            android:backgroundTint="#D32F2F"
-            android:textColor="#FFFFFF"
+            android:textStyle="bold"
+            android:textAllCaps="false"
+            android:textColor="@color/hermes_on_action"
+            android:background="@drawable/bg_btn_stop_autologin"
+            android:stateListAnimator="@null"
             android:layout_marginTop="12dp"
             android:visibility="gone" />
 

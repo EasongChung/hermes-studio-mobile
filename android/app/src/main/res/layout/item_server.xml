@@ -1,13 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- item_server.xml - 服务器列表项布局 -->
+<!-- item_server.xml - 服务器列表项布局（深色指挥台卡片） -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="horizontal"
-    android:padding="16dp"
-    android:background="#FFFFFF"
-    android:layout_marginBottom="8dp"
-    android:elevation="1dp"
+    android:paddingStart="16dp"
+    android:paddingEnd="16dp"
+    android:paddingTop="14dp"
+    android:paddingBottom="14dp"
+    android:background="@drawable/bg_server_item"
+    android:layout_marginBottom="10dp"
+    android:elevation="2dp"
     android:clickable="true"
     android:focusable="true"
     android:foreground="?selectableItemBackground">
@@ -15,12 +18,12 @@
     <!-- 选择指示器 -->
     <TextView
         android:id="@+id/selectedIndicator"
-        android:layout_width="24dp"
-        android:layout_height="24dp"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
         android:layout_marginEnd="12dp"
         android:layout_gravity="center_vertical"
-        android:textSize="18sp"
-        android:textColor="#2196F3"
+        android:textSize="16sp"
+        android:textColor="@color/hermes_accent_soft"
         android:gravity="center" />
 
     <!-- 服务器信息 -->
@@ -35,18 +38,16 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:textSize="16sp"
-            android:textColor="#1A1A1A"
+            android:textColor="@color/hermes_text_primary"
             android:textStyle="bold" />
 
         <TextView
             android:id="@+id/serverUrl"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:textSize="13sp"
-            android:textColor="#999999"
-            android:layout_marginTop="2dp" />
+            android:textSize="12sp"
+            android:textColor="@color/hermes_text_secondary"
+            android:layout_marginTop="3dp" />
     </LinearLayout>
-
-    <!-- 编辑按钮 -->
 
 </LinearLayout>

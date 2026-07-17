@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Hermes 系统深色主题 token：保留低饱和深色表面，与 WebUI 深色主体协调 -->
+    <color name="hermes_primary">#0F1115</color>
+    <color name="hermes_primary_dark">#090B10</color>
+    <color name="hermes_page_bg_start">#0B0F14</color>
+    <color name="hermes_page_bg_center">#111827</color>
+    <color name="hermes_page_bg_end">#0F1115</color>
+    <color name="hermes_accent">#818CF8</color>
+    <color name="hermes_accent_soft">#A5B4FC</color>
+    <color name="hermes_accent_pressed">#6366F1</color>
+    <color name="hermes_accent_tint">#1E1B4B</color>
+    <color name="hermes_surface">#151922</color>
+    <color name="hermes_surface_elevated">#1F2937</color>
+    <color name="hermes_surface_selected">#24213A</color>
+    <color name="hermes_border">#334155</color>
+    <color name="hermes_text_primary">#F8FAFC</color>
+    <color name="hermes_text_secondary">#CBD5E1</color>
+    <color name="hermes_text_muted">#94A3B8</color>
+    <color name="hermes_on_action">#FFFFFF</color>
+    <color name="hermes_success">#22C55E</color>
+    <color name="hermes_warning">#F59E0B</color>
+    <color name="hermes_connect">#6366F1</color>
+    <color name="hermes_connect_pressed">#4F46E5</color>
+    <color name="hermes_disabled_surface">#475569</color>
+    <color name="hermes_danger">#E11D48</color>
+    <color name="hermes_danger_pressed">#BE123C</color>
+    <!-- Splash 背景色 -->
+    <color name="splash_background">#0F1115</color>
+</resources>

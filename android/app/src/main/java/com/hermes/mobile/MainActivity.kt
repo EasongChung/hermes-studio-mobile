@@ -61,8 +61,13 @@ class MainActivity : AppCompatActivity() {
         // 【ENABLE_API_RESPONSE_CACHE】控制是否启用透明 API 缓存返回；如出现异常可改为 false 快速回退原网络流程。
         private const val ENABLE_API_PROBE_LOG = true
         private const val ENABLE_API_RESPONSE_CACHE = true
-        // Socket.IO polling 写入可能对应聊天发送事件；加冷却避免长轮询/心跳导致缓存频繁清理。
-        private const val SOCKET_MUTATION_INVALIDATE_COOLDOWN_MS = 3000L
+        /**
+         * 启动后允许“缓存命中 → 后台同步发现变化 → 注入 visibilitychange 局部刷新”的时间窗口。
+         * 超过该窗口后只更新本地缓存，不再触发 UI 软刷新，避免用户已进入输入态时被突然刷新。
+         */
+        private const val CACHE_SOFT_REFRESH_WINDOW_MS = 20_000L
+        /** 软刷新注入延迟：给当前渲染一帧稳定时间，减少感知闪烁。 */
+        private const val CACHE_SOFT_REFRESH_DELAY_MS = 500L
 
         // 双击退出参数
         private const val BACK_PRESS_TIMEOUT_MS = 1500L // 1.5 秒内连续按才计数
@@ -87,8 +92,13 @@ class MainActivity : AppCompatActivity() {
     private var authToken: String? = null
     /** 标记是否正在恢复状态（横竖屏切换），避免重复触发加载 */
     private var isRestoringState = false
-    /** 最近一次因 Socket.IO 写入触发缓存失效的时间，用于节流避免频繁清理。 */
-    private var lastSocketMutationInvalidateAtMs = 0L
+    /** MainActivity 创建时间，用于限制启动早期软刷新窗口。 */
+    private val appStartTimeMs = System.currentTimeMillis()
+    /**
+     * 当前 Activity 生命周期内是否已触发过会话列表软刷新。
+     * 防止 cache hit → soft refresh → 再次 cache hit → 再次 soft refresh 的循环。
+     */
+    private var sessionListSoftRefreshTriggered = false
 
     // ===== 三击退出相关 =====
     /** 记录连续返回键按下的时间戳 */
@@ -104,6 +114,8 @@ class MainActivity : AppCompatActivity() {
         // 从 Splash 主题切回正常主题（消除启动背景）
         setTheme(R.style.Theme_HermesStudioMobile)
         super.onCreate(savedInstanceState)
+        // 小屏手机锁定竖屏；平板/大屏保持自由方向。
+        ScreenOrientationHelper.lockPortraitOnPhone(this)
 
         // 从 Intent 获取服务器 URL 和登录凭据
         serverUrl = intent.getStringExtra("server_url") ?: ""
@@ -280,12 +292,13 @@ class MainActivity : AppCompatActivity() {
                 val method = request.method ?: "GET"
                 logApiProbe(method, path, uri.encodedQuery)
 
-                // Sprint 8 缓存失效：会话/消息相关写操作会影响列表排序、最后消息或更新时间，
-                // 因此在请求发出前先清理当前用户缓存，避免后续继续显示旧会话列表。
+                // Sprint 8 缓存失效：仅对明确 HTTP 写操作（删除/重命名/归档等）清理缓存。
+                // Socket.IO polling 不再清缓存，避免启动握手误删导致首屏缓存失效。
                 invalidateApiCacheIfNeeded(method, path, uri.encodedQuery)
 
-                // Sprint 8 透明 API 缓存：仅对匹配器确认的会话类 GET 候选生效。
-                // 命中本地缓存时立即返回缓存，同时后台刷新远程数据；未命中则继续原网络流程。
+                // Sprint 8 透明 API 缓存：仅对匹配器确认的会话列表 GET 候选生效。
+                // 命中本地缓存时立即返回缓存，同时后台刷新远程数据；
+                // 若远程数据变化，在启动窗口内触发一次前端局部刷新（非 webView.reload）。
                 tryServeApiCache(method, path, uri.encodedQuery, request.requestHeaders)?.let { return it }
 
                 if (API_PATH_PREFIXES.any { path.startsWith(it) }) return null
@@ -426,15 +439,35 @@ class MainActivity : AppCompatActivity() {
         if (cached != null) {
             val (entry, body) = cached
             Log.d(TAG, "[HermesCache] hit path=$pathAndQuery fresh=${entry.isFresh()} size=${body.size}")
-            refreshApiCacheInBackground(method, path, query, cacheKey, userIdentity, requestHeaders)
+            // 缓存命中：立即返回 last-known-good 数据；后台同步若发现变化，则在启动窗口内触发一次前端局部刷新。
+            refreshApiCacheInBackground(
+                method = method,
+                path = path,
+                query = query,
+                cacheKey = cacheKey,
+                userIdentity = userIdentity,
+                requestHeaders = requestHeaders,
+                previousBody = body,
+                allowSoftRefresh = true
+            )
             val mimeType = entry.contentType.substringBefore(';').ifBlank { "application/json" }
             val encoding = entry.contentType.substringAfter("charset=", "UTF-8")
             return WebResourceResponse(mimeType, encoding, ByteArrayInputStream(body))
         }
 
         // 无缓存时不阻塞 WebView 原始请求，只后台预热一次，成功后下次启动/请求即可命中。
+        // miss 场景页面本身会走网络拿到最新数据，因此不触发软刷新。
         Log.d(TAG, "[HermesCache] miss path=$pathAndQuery, warmup in background")
-        refreshApiCacheInBackground(method, path, query, cacheKey, userIdentity, requestHeaders)
+        refreshApiCacheInBackground(
+            method = method,
+            path = path,
+            query = query,
+            cacheKey = cacheKey,
+            userIdentity = userIdentity,
+            requestHeaders = requestHeaders,
+            previousBody = null,
+            allowSoftRefresh = false
+        )
         return null
     }
 
@@ -443,6 +476,11 @@ class MainActivity : AppCompatActivity() {
      *
      * 【安全边界】
      * 只对 GET 候选接口执行；失败只记录日志，不影响当前 WebView 页面。
+     *
+     * 【局部刷新】
+     * 当本次请求曾经命中旧缓存（allowSoftRefresh=true）且远程 body 与旧缓存不同时，
+     * 在启动 20 秒窗口内注入 document.visibilitychange，触发前端 refreshSessionListOnly()，
+     * 实现“页面不 reload、只局部更新会话列表”。
      */
     private fun refreshApiCacheInBackground(
         method: String,
@@ -450,7 +488,9 @@ class MainActivity : AppCompatActivity() {
         query: String?,
         cacheKey: String,
         userIdentity: String,
-        requestHeaders: Map<String, String>
+        requestHeaders: Map<String, String>,
+        previousBody: ByteArray?,
+        allowSoftRefresh: Boolean
     ) {
         if (!method.equals("GET", ignoreCase = true)) return
 
@@ -476,6 +516,7 @@ class MainActivity : AppCompatActivity() {
                 val contentType = conn.contentType ?: "application/json; charset=utf-8"
                 conn.disconnect()
 
+                val dataChanged = previousBody == null || !previousBody.contentEquals(body)
                 val serverHash = CacheKeyBuilder.hashText(serverOrigin)
                 val userHash = CacheKeyBuilder.hashText(userIdentity)
                 val saved = apiCacheManager.write(
@@ -487,11 +528,59 @@ class MainActivity : AppCompatActivity() {
                     contentType = contentType,
                     body = body
                 )
-                Log.d(TAG, "[HermesCache] refresh saved=$saved path=$pathAndQuery size=${body.size}")
+                Log.d(
+                    TAG,
+                    "[HermesCache] refresh saved=$saved changed=$dataChanged path=$pathAndQuery size=${body.size}"
+                )
+
+                // 仅在“缓存命中后的后台同步”发现数据变化时，触发一次前端局部刷新。
+                if (allowSoftRefresh && dataChanged && saved) {
+                    maybeTriggerSessionListSoftRefresh(path)
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "[HermesCache] refresh failed path=$path: ${e.message}")
             }
         }.start()
+    }
+
+    /**
+     * 在启动窗口内触发一次会话列表局部刷新。
+     *
+     * 【实现方式】
+     * 前端 chat store 已监听 document.visibilitychange，并在 visible 时调用 refreshSessionListOnly()。
+     * Android 只注入该事件，不调用 webView.reload()，避免整页闪烁和输入态被打断。
+     *
+     * 【保护】
+     * 1. 仅启动 CACHE_SOFT_REFRESH_WINDOW_MS 内允许；
+     * 2. 每个 MainActivity 生命周期最多一次；
+     * 3. 延迟 CACHE_SOFT_REFRESH_DELAY_MS，让首屏渲染先稳定。
+     */
+    private fun maybeTriggerSessionListSoftRefresh(path: String) {
+        if (sessionListSoftRefreshTriggered) {
+            Log.d(TAG, "[HermesCache] soft refresh already triggered, skip path=$path")
+            return
+        }
+        val elapsed = System.currentTimeMillis() - appStartTimeMs
+        if (elapsed > CACHE_SOFT_REFRESH_WINDOW_MS) {
+            Log.d(TAG, "[HermesCache] soft refresh window expired elapsed=${elapsed}ms path=$path")
+            return
+        }
+        if (!::webView.isInitialized) return
+
+        sessionListSoftRefreshTriggered = true
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (!::webView.isInitialized) return@postDelayed
+            val js = """
+                try {
+                  document.dispatchEvent(new Event('visibilitychange'));
+                  console.log('[HermesMobile] session list soft refresh via visibilitychange');
+                } catch (e) {
+                  console.warn('[HermesMobile] session list soft refresh failed', e);
+                }
+            """.trimIndent()
+            webView.evaluateJavascript(js, null)
+            Log.d(TAG, "[HermesCache] injected visibilitychange soft refresh path=$path")
+        }, CACHE_SOFT_REFRESH_DELAY_MS)
     }
 
     /**
@@ -537,6 +626,8 @@ class MainActivity : AppCompatActivity() {
             "Cookie",
             "X-API-Key",
             "x-api-key",
+            "X-Hermes-Profile",
+            "x-hermes-profile",
             "Accept-Language",
             "User-Agent"
         )
@@ -823,10 +914,17 @@ class MainActivity : AppCompatActivity() {
      *
      * 【为什么需要】
      * 发送消息、创建/删除会话会改变会话列表的最后消息、更新时间或排序。
-     * 如果不清理缓存，后续启动可能继续显示旧列表。
+     * 聊天 run 只做软失效：保留 last-known-good 缓存用于下次冷启动首屏，同时触发局部刷新。
+     * 删除/归档/重命名等明确会话管理操作仍清理缓存，避免长期显示已删除或结构变更后的旧列表。
      */
     private fun invalidateApiCacheIfNeeded(method: String, path: String, query: String?) {
         if (!ENABLE_API_RESPONSE_CACHE) return
+
+        if (CacheableApiMatcher.isSoftConversationMutation(method, path)) {
+            Log.d(TAG, "[HermesCache] soft mutation observed, keep last-known-good cache method=$method path=$path")
+            maybeTriggerSessionListSoftRefresh(path)
+            return
+        }
 
         if (CacheableApiMatcher.isConversationMutation(method, path)) {
             Log.d(TAG, "[HermesCache] invalidate by mutation method=$method path=$path")
@@ -834,17 +932,12 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // Socket.IO 是 Web 端聊天发送的主通道。这里仅对 POST /socket.io/?transport=polling 做保守失效，
-        // 并设置短冷却窗口，避免 polling 心跳或连续事件导致频繁清理缓存。
+        // Socket.IO polling 无法从 shouldInterceptRequest 拿到 POST body，
+        // 无法区分握手/心跳/upgrade/真正消息写入。
+        // 继续用它清缓存会在重启阶段误删会话列表缓存，导致首屏永远走远程慢路径。
+        // 因此这里只观测日志，不做破坏性清理；明确 HTTP 写操作仍由上方 mutation 规则清理。
         if (CacheableApiMatcher.isSocketIoPollingMutation(method, path, query)) {
-            val now = System.currentTimeMillis()
-            if (now - lastSocketMutationInvalidateAtMs < SOCKET_MUTATION_INVALIDATE_COOLDOWN_MS) {
-                Log.d(TAG, "[HermesCache] skip socket invalidate by cooldown path=$path")
-                return
-            }
-            lastSocketMutationInvalidateAtMs = now
-            Log.d(TAG, "[HermesCache] invalidate by socket mutation path=$path")
-            clearCurrentUserApiCache()
+            Log.d(TAG, "[HermesCache] socket polling observed, keep cache for seamless startup path=$path")
         }
     }
 
