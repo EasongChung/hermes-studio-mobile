@@ -28,6 +28,8 @@ import com.hermes.mobile.cache.CacheKeyBuilder
 import com.hermes.mobile.cache.CacheableApiMatcher
 import com.hermes.mobile.client.HermesChromeClient
 import com.hermes.mobile.config.ServerManager
+import com.hermes.mobile.webui.WebUiBundleManager
+import com.hermes.mobile.webui.WebUiBundlePolicy
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.ByteArrayInputStream
@@ -69,6 +71,9 @@ class MainActivity : AppCompatActivity() {
         /** 软刷新注入延迟：给当前渲染一帧稳定时间，减少感知闪烁。 */
         private const val CACHE_SOFT_REFRESH_DELAY_MS = 500L
 
+        /** WebUI 包：主框架加载失败回退防抖窗口 */
+        private const val WEBUI_ROLLBACK_COOLDOWN_MS = 8_000L
+
         // 双击退出参数
         private const val BACK_PRESS_TIMEOUT_MS = 1500L // 1.5 秒内连续按才计数
         private const val BACK_PRESS_THRESHOLD = 2      // 连续 2 次触发
@@ -84,6 +89,9 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private lateinit var apiCacheManager: ApiCacheManager
+    private lateinit var webUiBundleManager: WebUiBundleManager
+    private val webUiPolicy = WebUiBundlePolicy()
+    private var lastWebUiRollbackAt = 0L
     private var serverUrl: String = ""
     private var serverOrigin: String = ""
     private var loginUsername: String = ""
@@ -144,6 +152,8 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         webView = findViewById(R.id.webView)
         apiCacheManager = ApiCacheManager(this)
+        webUiBundleManager = WebUiBundleManager(this, webUiPolicy)
+        webUiBundleManager.ensureOriginReady(serverOrigin)
 
         // 如果有保存的 WebView 状态，优先恢复（横竖屏切换后）
         if (savedInstanceState != null && savedInstanceState.getBoolean("webview_has_state", false)) {
@@ -302,7 +312,8 @@ class MainActivity : AppCompatActivity() {
                 tryServeApiCache(method, path, uri.encodedQuery, request.requestHeaders)?.let { return it }
 
                 if (API_PATH_PREFIXES.any { path.startsWith(it) }) return null
-                return tryServeLocalAsset(path)
+                // WebUI：运行时本地包优先 → APK 出厂 assets → 网络
+                return tryServeWebUiAsset(path)
             }
 
             override fun shouldOverrideUrlLoading(
@@ -310,6 +321,16 @@ class MainActivity : AppCompatActivity() {
                 request: WebResourceRequest?
             ): Boolean {
                 return false
+            }
+
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: android.webkit.WebResourceError?
+            ) {
+                super.onReceivedError(view, request, error)
+                if (request?.isForMainFrame != true) return
+                maybeRollbackWebUiAndReload("main-frame-error code=${error?.errorCode}")
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -406,7 +427,50 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadFrontend() {
+        // 后台已下载的新版在「下次加载」时激活，避免打断当前会话。
+        if (::webUiBundleManager.isInitialized && serverOrigin.isNotBlank()) {
+            val switched = webUiBundleManager.activatePendingIfAny(serverOrigin)
+            Log.d(
+                TAG,
+                "[HermesWebUi] loadFrontend ${webUiBundleManager.getDebugSnapshot(serverOrigin)} switched=$switched"
+            )
+        }
         webView.loadUrl(serverUrl)
+        scheduleWebUiProbe(force = false)
+    }
+
+    /**
+     * 延迟后台探测服务端 WebUI 指纹；有新版则后台下载，待下次 loadFrontend 激活。
+     */
+    private fun scheduleWebUiProbe(force: Boolean) {
+        if (!::webUiBundleManager.isInitialized || serverOrigin.isBlank()) return
+        val delay = if (force) 0L else webUiPolicy.probeInitialDelayMs
+        Handler(Looper.getMainLooper()).postDelayed({
+            webUiBundleManager.scheduleProbe(serverOrigin, force = force)
+        }, delay)
+    }
+
+    /**
+     * 主框架本地包加载失败时回退 previous 并重新 load（带冷却，防止死循环）。
+     */
+    private fun maybeRollbackWebUiAndReload(reason: String) {
+        if (!::webUiBundleManager.isInitialized || serverOrigin.isBlank()) return
+        val now = System.currentTimeMillis()
+        if (now - lastWebUiRollbackAt < WEBUI_ROLLBACK_COOLDOWN_MS) {
+            Log.d(TAG, "[HermesWebUi] rollback skip cooldown reason=$reason")
+            return
+        }
+        if (!webUiBundleManager.rollbackToPrevious(serverOrigin)) {
+            Log.d(TAG, "[HermesWebUi] rollback unavailable reason=$reason")
+            return
+        }
+        lastWebUiRollbackAt = now
+        Log.w(TAG, "[HermesWebUi] rollback applied reason=$reason")
+        Handler(Looper.getMainLooper()).post {
+            if (::webView.isInitialized) {
+                webView.loadUrl(serverUrl)
+            }
+        }
     }
 
     /**
@@ -654,7 +718,33 @@ class MainActivity : AppCompatActivity() {
         return headers.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
     }
 
-    private fun tryServeLocalAsset(path: String): WebResourceResponse? {
+    /**
+     * WebUI 静态资源：优先运行时下载包，其次 APK 出厂 assets。
+     * 均未命中则返回 null，由 WebView 走网络。
+     */
+    private fun tryServeWebUiAsset(path: String): WebResourceResponse? {
+        val extensionHint = when {
+            path == "/" || path.isEmpty() || path.endsWith("/") -> "html"
+            else -> path.substringAfterLast('.', "").lowercase()
+        }
+        if (extensionHint.isNotEmpty() && extensionHint !in STATIC_FILE_EXTENSIONS && path != "/" && !path.endsWith("/")) {
+            // 无扩展名的 SPA 路由不拦截，交给网络/服务端
+            if ('.' !in path.substringAfterLast('/')) return null
+        }
+
+        // 1) 运行时 active 版本
+        if (::webUiBundleManager.isInitialized) {
+            webUiBundleManager.openActiveFile(serverOrigin, path)?.let { (stream, ext) ->
+                Log.d(TAG, "[HermesWebUi] hit runtime path=$path")
+                return buildStaticResponse(stream, ext.ifBlank { extensionHint })
+            }
+        }
+
+        // 2) APK 出厂包
+        return tryServeApkAsset(path)
+    }
+
+    private fun tryServeApkAsset(path: String): WebResourceResponse? {
         val assetPath = when {
             path == "/" || path.isEmpty() -> "$ASSETS_FRONTEND_PATH/index.html"
             path.startsWith("/") -> "$ASSETS_FRONTEND_PATH${path}"
@@ -668,7 +758,11 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             return null
         }
+        Log.d(TAG, "[HermesWebUi] hit apk-seed path=$path")
+        return buildStaticResponse(inputStream, extension)
+    }
 
+    private fun buildStaticResponse(inputStream: InputStream, extension: String): WebResourceResponse {
         val mimeType = getMimeType(extension)
         val encoding = if (extension == "html" || extension == "js" || extension == "css") "UTF-8" else null
 
@@ -1001,6 +1095,11 @@ class MainActivity : AppCompatActivity() {
         // 每次恢复时请求录音权限（如果尚未授予）
         // 这样即使用户第一次拒绝，下次打开还有机会授权
         requestRecordAudioPermission()
+
+        // 回到前台时节流探测服务端 WebUI 是否有新版本（下载后下次 load 才生效）
+        if (::webUiBundleManager.isInitialized && serverOrigin.isNotBlank()) {
+            scheduleWebUiProbe(force = false)
+        }
     }
 
     override fun onDestroy() {
