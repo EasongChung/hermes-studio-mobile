@@ -2,7 +2,6 @@ import { io, Socket } from 'socket.io-client'
 import { createHash, randomBytes } from 'crypto'
 import { getToken } from '../../../services/auth'
 import { logger } from '../../../services/logger'
-import { updateUsage } from '../../../db/hermes/usage-store'
 import { countTokens } from '../../../lib/context-compressor'
 import { AgentBridgeClient, type AgentBridgeContextEstimate, type AgentBridgeMessage, type AgentBridgeOutput } from '../agent-bridge'
 import { convertContentBlocksForAgent, isContentBlockArray } from '../run-chat/content-blocks'
@@ -32,6 +31,8 @@ interface AgentConfig {
     name: string
     description: string
     invited: number
+    /** Group-chat Hermes agents must never detach delegate_task work. */
+    backgroundDelegationEnabled: false
 }
 
 interface MessageData {
@@ -161,6 +162,7 @@ class AgentClient {
     readonly profile: string
     readonly name: string
     readonly description: string
+    private readonly backgroundDelegationEnabled: false
     private socket: Socket | null = null
     private joinedRooms = new Set<string>()
     private handlers: AgentEventHandler
@@ -179,6 +181,7 @@ class AgentClient {
         this.profile = config.profile
         this.name = config.name
         this.description = config.description
+        this.backgroundDelegationEnabled = config.backgroundDelegationEnabled ?? false
         this.handlers = handlers
     }
 
@@ -444,6 +447,7 @@ class AgentClient {
             {
                 ...(modelContext.model ? { model: modelContext.model } : {}),
                 ...(modelContext.provider ? { provider: modelContext.provider } : {}),
+                background_delegation_enabled: this.backgroundDelegationEnabled,
             },
         )
         this.cacheBridgeContext(sessionId, estimate, instructions, modelContext)
@@ -754,6 +758,8 @@ class AgentClient {
                     ...(modelContext.provider ? { provider: modelContext.provider } : {}),
                     source: 'api_server',
                     ...(roomWorkspace ? { workspace: roomWorkspace } : {}),
+                    // Used only if this operation creates the cached AgentSession.
+                    background_delegation_enabled: this.backgroundDelegationEnabled,
                 },
             )
             bridgeStarted = true
@@ -835,7 +841,6 @@ class AgentClient {
                 await stopStaleStartedRun?.()
                 return
             }
-            recordBridgeUsage(roomId, this.profile, lastChunk?.result)
             logger.debug(`[AgentClients] ${this.name}: bridge response completed, content length=${totalContent.length}`)
             if (currentContent) {
                 if (!this.replySessionIsCurrent(roomId, sessionId, replyInterruptVersion)) {
@@ -1179,21 +1184,6 @@ function extractBridgeFinalText(chunk: AgentBridgeOutput | null): string {
     const result = chunk?.result as any
     const output = result?.final_response || chunk?.output || ''
     return typeof output === 'string' ? output.trim() : ''
-}
-
-function recordBridgeUsage(roomId: string, profile: string, result: unknown): void {
-    const payload = result as any
-    const usage = payload?.usage || payload?.response?.usage
-    if (!usage) return
-    updateUsage(roomId, {
-        inputTokens: usage.input_tokens ?? usage.inputTokens ?? 0,
-        outputTokens: usage.output_tokens ?? usage.outputTokens ?? 0,
-        cacheReadTokens: usage.cache_read_tokens ?? usage.cacheReadTokens ?? 0,
-        cacheWriteTokens: usage.cache_write_tokens ?? usage.cacheWriteTokens ?? 0,
-        reasoningTokens: usage.reasoning_tokens ?? usage.reasoningTokens ?? 0,
-        model: payload?.model || payload?.response?.model || '',
-        profile,
-    })
 }
 
 // ─── AgentClients (roomId -> agents) ──────────────────────────

@@ -534,6 +534,7 @@ class ChatStorage {
                 ...args.draft,
                 room_id: args.roomId,
                 message_id: messageId,
+                assistant_message_id: args.parentMessageId || '',
                 workspace: workspaceLabel,
             }
             const change = insertWorkspaceRunChange(db, redactedDraft)
@@ -1097,6 +1098,7 @@ export class GroupChatServer {
                         name: agent.name,
                         description: agent.description,
                         invited: agent.invited,
+                        backgroundDelegationEnabled: false,
                     })
                     await this.agentClients.addAgentToRoom(room.id, client)
                     total++
@@ -1153,6 +1155,7 @@ export class GroupChatServer {
         logger.debug(`[GroupChat] Connected: ${userName} (socket=${socket.id}, user=${userId})`)
 
         socket.on('join', (data: { roomId?: string; name?: string }, ack?: (response?: unknown) => void) => this.handleJoin(socket, data, ack))
+        socket.on('update_member_profile', (data: { roomId?: string; name?: string; description?: string } | undefined, ack?: (response?: unknown) => void) => this.handleUpdateMemberProfile(socket, data, ack))
         socket.on('message', (data: Partial<ChatMessage> & { roomId?: string; content: string | Array<Record<string, unknown>>; id?: string; mentionDepth?: number }, ack?: (response?: unknown) => void) => this.handleMessage(socket, data, ack))
         socket.on('message_stream_start', (data: { roomId?: string; id?: string; senderId?: string; senderName?: string; timestamp?: number }) => this.handleMessageStreamStart(socket, data))
         socket.on('message_stream_delta', (data: { roomId?: string; id?: string; delta?: string }) => this.handleMessageStreamDelta(socket, data))
@@ -1273,13 +1276,17 @@ export class GroupChatServer {
             return
         }
         const userInfo = this.userInfoMap.get(userId) || {
-            name: existingMember?.name || `User-${userId.slice(0, 6)}`,
-            description: existingMember?.description || '',
+            name: `User-${userId.slice(0, 6)}`,
+            description: '',
         }
         const requestedName = typeof data.name === 'string' ? data.name.trim() : ''
         const requestedDescription = typeof data.description === 'string' ? data.description.trim() : ''
-        const userName = requestedName || existingMember?.name || userInfo.name
-        const description = requestedDescription || existingMember?.description || userInfo.description
+        // On rejoin, prefer the per-room DB record over the join-request name
+        // so switching rooms doesn't overwrite a member's per-room identity.
+        // The DB is authoritative for existing members; requestedName only
+        // applies on first join (when there's no DB record yet).
+        const userName = existingMember?.name || requestedName || userInfo.name
+        const description = existingMember?.description || requestedDescription || userInfo.description
 
         // Update stored user info
         this.userInfoMap.set(userId, { name: userName, description })
@@ -1353,6 +1360,51 @@ export class GroupChatServer {
         })
 
         logger.debug(`[GroupChat] ${userName} (user=${userId}) joined room: ${roomId}`)
+    }
+
+    private handleUpdateMemberProfile(
+        socket: Socket,
+        data: { roomId?: string; name?: string; description?: string } | undefined,
+        ack?: (res: any) => void,
+    ): void {
+        const roomId = typeof data?.roomId === 'string' ? data.roomId.trim() : ''
+        const name = typeof data?.name === 'string' ? data.name.trim() : ''
+        const description = typeof data?.description === 'string' ? data.description.trim() : ''
+        if (!roomId || !name) {
+            ack?.({ error: 'roomId and name are required' })
+            return
+        }
+        if (name.length > 120 || description.length > 2000) {
+            ack?.({ error: 'Member profile is too long' })
+            return
+        }
+
+        const joined = this.getOnlineRoomMember(socket, roomId)
+        if (!joined || joined.member.source !== 'human') {
+            ack?.({ error: 'Access denied' })
+            return
+        }
+
+        try {
+            const userId = joined.member.userId
+            const authUserId = this.socketAuthUserIdMap.get(socket.id)
+            const avatar = joined.member.avatar || ''
+            this.storage.addRoomMember(roomId, userId, name, description, avatar, authUserId)
+            joined.room.addOrUpdateMember(socket.id, userId, name, description, 'human', avatar)
+            this.userInfoMap.set(userId, { name, description })
+
+            const members = joined.room.getMembersList()
+            this.nsp.to(roomId).emit('member_updated', {
+                roomId,
+                memberId: userId,
+                memberName: name,
+                members,
+            })
+            ack?.({ member: joined.room.getOnlineMemberBySocketId(socket.id), members })
+        } catch (err) {
+            logger.error(`[GroupChat] Failed to update member profile: ${(err as Error).message}`)
+            ack?.({ error: 'Failed to update member profile' })
+        }
     }
 
     private handleMessage(socket: Socket, data: Partial<ChatMessage> & { roomId?: string; content: string | Array<Record<string, unknown>>; id?: string; mentionDepth?: number }, ack?: (res: any) => void): void {

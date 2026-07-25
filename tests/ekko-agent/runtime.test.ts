@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from 'vitest'
+import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { describe, expect, it, vi } from 'vitest'
 import {
   AgentRuntime,
   AgentToolRegistry,
@@ -90,6 +92,63 @@ describe('ekko-agent runtime', () => {
     })
     expect(result.messages.map(message => message.role)).toEqual(['system', 'user', 'assistant'])
     expect(events).toEqual(['run.started', 'model.started', 'context.estimated', 'model.message', 'run.completed'])
+  })
+
+  it('emits one model usage event for each completed non-streaming model call', async () => {
+    const client = modelClient(() => ({
+      content: 'hello',
+      usage: {
+        inputTokens: 10,
+        outputTokens: 4,
+        cacheReadTokens: 6,
+        reasoningTokens: 2,
+      },
+    }))
+    const runtime = new AgentRuntime({ modelClient: client, tools: new AgentToolRegistry() })
+    const usageEvents: any[] = []
+
+    await runtime.run({
+      messages: ['hi'],
+      onEvent: event => {
+        if (event.type === 'model.usage') usageEvents.push(event)
+      },
+    })
+
+    expect(usageEvents).toEqual([{
+      type: 'model.usage',
+      runId: expect.any(String),
+      step: 1,
+      usage: {
+        inputTokens: 10,
+        outputTokens: 4,
+        cacheReadTokens: 6,
+        reasoningTokens: 2,
+      },
+    }])
+  })
+
+  it('collapses repeated streaming usage updates into one event per model call', async () => {
+    const client = streamingModelClient([
+      { type: 'text-delta', text: 'ok' },
+      { type: 'usage', usage: { inputTokens: 8, outputTokens: 1 } },
+      { type: 'usage', usage: { inputTokens: 8, outputTokens: 2, cacheReadTokens: 5 } },
+      { type: 'done', response: { finishReason: 'stop' } },
+    ])
+    const runtime = new AgentRuntime({ modelClient: client, tools: new AgentToolRegistry() })
+    const usageEvents: any[] = []
+
+    await runtime.run({
+      messages: ['hi'],
+      onEvent: event => {
+        if (event.type === 'model.usage') usageEvents.push(event)
+      },
+    })
+
+    expect(usageEvents).toHaveLength(1)
+    expect(usageEvents[0]).toMatchObject({
+      step: 1,
+      usage: { inputTokens: 8, outputTokens: 2, cacheReadTokens: 5 },
+    })
   })
 
   it('emits model reasoning before the assistant message', async () => {
@@ -184,6 +243,48 @@ describe('ekko-agent runtime', () => {
       { role: 'assistant', content: 'tool said from-tool' },
     ])
     expect(result.steps.map(step => step.type)).toEqual(['model', 'tool', 'model'])
+  })
+
+  it('sanitizes base64 tool results before the next model request', async () => {
+    const dataUrl = `data:image/png;base64,${Buffer.from('runtime-avatar').toString('base64')}`
+    const avatarTool: AgentTool = {
+      definition: {
+        name: 'profiles_list',
+        description: 'List profiles',
+        parameters: { type: 'object' },
+      },
+      async execute() {
+        return {
+          ok: true,
+          content: JSON.stringify({ profiles: [{ avatar: { type: 'image', dataUrl } }] }),
+        }
+      },
+    }
+    const tools = new AgentToolRegistry()
+    tools.register(avatarTool)
+    let assetUrl = ''
+    const client = modelClient((request, call) => {
+      if (call === 1) {
+        return {
+          content: '',
+          toolCalls: [{ id: 'call_profiles', name: 'profiles_list', arguments: {} }],
+          finishReason: 'tool_calls',
+        }
+      }
+      const toolMessage = request.messages.find(message => message.role === 'tool')
+      expect(toolMessage?.content).not.toContain('base64')
+      assetUrl = JSON.parse(toolMessage?.content || '{}').profiles[0].avatar.dataUrl
+      expect(assetUrl).toMatch(/^file:\/\//)
+      return { content: 'done', finishReason: 'stop' }
+    })
+
+    try {
+      const result = await new AgentRuntime({ modelClient: client, tools, toolDelayMs: 0 })
+        .run({ messages: ['list profiles'] })
+      expect(result.output.content).toBe('done')
+    } finally {
+      if (assetUrl) await rm(fileURLToPath(assetUrl), { force: true })
+    }
   })
 
   it('discovers and executes MCP tools from the run tool context', async () => {
@@ -346,7 +447,7 @@ describe('ekko-agent runtime', () => {
     expect(events.at(-1)).toBe('run.failed')
   })
 
-  it('builds a system prompt from runtime, skills, tools, and user system messages', async () => {
+  it('builds a system prompt from runtime context and user system messages without skill instructions', async () => {
     const requests: ModelRequest[] = []
     const client = modelClient((request) => {
       requests.push(request)
@@ -369,13 +470,101 @@ describe('ekko-agent runtime', () => {
         { role: 'system', content: 'User system.' },
         { role: 'user', content: 'Go' },
       ],
+      model: 'test-model',
     })
 
     expect(requests[0].messages[0].content).toContain('Base prompt.')
     expect(requests[0].messages[0].content).toContain('Use tools carefully.')
-    expect(requests[0].messages[0].content).toContain('Review for correctness.')
+    expect(requests[0].messages[0].content).not.toContain('Review for correctness.')
+    expect(requests[0].messages[0].content).not.toContain('## Skills')
     expect(requests[0].messages[0].content).toContain('User system.')
+    expect(requests[0].messages[0].content).toContain('## Runtime Context\nprovider: test\nmodel: test-model')
     expect(requests[0].messages.filter(message => message.role === 'system')).toHaveLength(1)
+  })
+
+  it('does not inject skill instructions when all tools are disabled', async () => {
+    const listTools = vi.fn(async () => [])
+    const tools = new AgentToolRegistry()
+    tools.registerProvider({ id: 'dynamic', listTools })
+    const client = modelClient((request) => {
+      expect(request.tools).toBeUndefined()
+      expect(request.messages[0].content).not.toContain('Keep this skill instruction.')
+      return { content: 'ok' }
+    })
+
+    await new AgentRuntime({
+      modelClient: client,
+      tools,
+      toolsEnabled: false,
+      skills: [{
+        id: 'kept-skill',
+        name: 'Kept Skill',
+        instructions: 'Keep this skill instruction.',
+      }],
+    }).run({ messages: ['hi'] })
+
+    expect(listTools).not.toHaveBeenCalled()
+  })
+
+  it('injects the skill discovery constraint when both skill tools are available', async () => {
+    const client = modelClient((request) => {
+      expect(request.tools?.map(tool => tool.name)).toEqual(expect.arrayContaining(['skill_list', 'skill_view']))
+      expect(request.messages[0].content).toContain('## Skill Discovery')
+      expect(request.messages[0].content).toContain('call skill_list before proceeding')
+      return { content: 'ok' }
+    })
+
+    await new AgentRuntime({ modelClient: client }).run({ messages: ['hi'] })
+  })
+
+  it('disables constructor and per-run skills without disabling regular tools', async () => {
+    const regularTool: AgentTool = {
+      definition: { name: 'regular_tool', parameters: { type: 'object' } },
+      async execute() {
+        return { ok: true, content: 'regular' }
+      },
+    }
+    const skillTool: AgentTool = {
+      definition: { name: 'skill_tool', parameters: { type: 'object' } },
+      async execute() {
+        return { ok: true, content: 'skill' }
+      },
+    }
+    const tools = new AgentToolRegistry()
+    tools.register(regularTool)
+    const client = modelClient((request) => {
+      expect(request.tools?.map(tool => tool.name)).toEqual(['regular_tool'])
+      expect(request.messages[0].content).not.toContain('Disabled constructor skill.')
+      expect(request.messages[0].content).not.toContain('Disabled run skill.')
+      return { content: 'ok' }
+    })
+    const runtime = new AgentRuntime({
+      modelClient: client,
+      tools,
+      skillsEnabled: false,
+      skills: [{
+        id: 'constructor-skill',
+        name: 'Constructor Skill',
+        instructions: 'Disabled constructor skill.',
+        tools: [skillTool],
+      }],
+    })
+
+    runtime.registerSkill({
+      id: 'registered-skill',
+      name: 'Registered Skill',
+      instructions: 'Disabled registered skill.',
+      tools: [skillTool],
+    })
+    await runtime.run({
+      messages: ['hi'],
+      skills: [{
+        id: 'run-skill',
+        name: 'Run Skill',
+        instructions: 'Disabled run skill.',
+        tools: [skillTool],
+      }],
+    })
   })
 
   it('refreshes dynamic tool providers before running', async () => {
@@ -440,5 +629,44 @@ describe('ekko-agent runtime', () => {
     expect(prompt).toContain('Base')
     expect(prompt).not.toContain('Available Tools')
     expect(prompt).not.toContain('read_file')
+  })
+
+  it('buildSystemPrompt includes provider and model in runtime context', () => {
+    const prompt = buildSystemPrompt({
+      basePrompt: 'Base',
+      context: {
+        provider: 'openrouter',
+        model: 'anthropic/claude-sonnet-4',
+        workspaceRoot: '/tmp/workspace',
+      },
+    })
+
+    expect(prompt).toContain([
+      '## Runtime Context',
+      'provider: openrouter',
+      'model: anthropic/claude-sonnet-4',
+      'workspaceRoot: /tmp/workspace',
+    ].join('\n'))
+  })
+
+  it('buildSystemPrompt adds the on-demand skill discovery constraint', () => {
+    const prompt = buildSystemPrompt({
+      basePrompt: 'Base',
+      skillDiscoveryEnabled: true,
+    })
+
+    expect(prompt).toContain('## Skill Discovery')
+    expect(prompt).toContain('call skill_list before proceeding')
+    expect(prompt).toContain('call skill_view with its exact name')
+    expect(prompt).not.toContain('## Skills')
+  })
+
+  it('buildSystemPrompt always includes Ekko image and file output guidance', () => {
+    const prompt = buildSystemPrompt({ basePrompt: 'Base' })
+
+    expect(prompt).toContain('## Image and File Output')
+    expect(prompt).toContain('![description](/absolute/path/image.png)')
+    expect(prompt).toContain('![description](<C:/absolute/path/image.png>)')
+    expect(prompt).toContain('Do not use relative paths or `file://` URLs.')
   })
 })

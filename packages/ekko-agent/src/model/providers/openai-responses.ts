@@ -13,14 +13,12 @@ import type {
   ModelUsage,
 } from '../types'
 import { isPlainRecord, parseJson, postJson, postStream, providerUrl, readServerSentEvents } from '../http'
+import { collectModelEvents } from '../messages'
 
 interface OpenAIResponsesPayload {
   model: string
   instructions?: string
-  input: Array<{
-    role: 'user' | 'assistant' | 'developer'
-    content: string
-  }>
+  input: OpenAIResponseInputItem[]
   temperature?: number
   max_output_tokens?: number
   tools?: Array<{
@@ -33,7 +31,28 @@ interface OpenAIResponsesPayload {
   stream?: boolean
   metadata?: Record<string, unknown>
   previous_response_id?: string
+  store: false
 }
+
+type OpenAIResponseInputItem =
+  | {
+      role: 'user' | 'assistant' | 'developer'
+      content: string | Array<
+        | { type: 'input_text'; text: string }
+        | { type: 'input_image'; image_url: string }
+      >
+    }
+  | {
+      type: 'function_call'
+      call_id: string
+      name: string
+      arguments: string
+    }
+  | {
+      type: 'function_call_output'
+      call_id: string
+      output: string
+    }
 
 interface OpenAIResponsesResponse {
   id?: string
@@ -54,6 +73,8 @@ interface OpenAIResponsesResponse {
     input_tokens?: number
     output_tokens?: number
     total_tokens?: number
+    input_tokens_details?: { cached_tokens?: number }
+    output_tokens_details?: { reasoning_tokens?: number }
   }
   status?: string
   error?: {
@@ -64,7 +85,7 @@ interface OpenAIResponsesResponse {
 const capabilities: ModelCapabilities = {
   streaming: true,
   tools: true,
-  vision: false,
+  vision: true,
   jsonMode: true,
   systemPrompt: true,
 }
@@ -85,6 +106,10 @@ export class OpenAIResponsesModelClient implements ModelClient {
   }
 
   async create(request: ModelRequest): Promise<ModelResponse> {
+    if (this.config.id === 'openai-codex') {
+      const output = await collectModelEvents(this.stream({ ...request, stream: true }))
+      return output.message
+    }
     const response = await postJson<OpenAIResponsesResponse>(
       this.config,
       this.fetchImpl,
@@ -106,6 +131,9 @@ export class OpenAIResponsesModelClient implements ModelClient {
       request.signal,
     )
 
+    let streamedText = ''
+    let streamedReasoning = ''
+    const collectedOutputItems: NonNullable<OpenAIResponsesResponse['output']> = []
     for await (const event of readServerSentEvents(response)) {
       if (event === '[DONE]') {
         yield { type: 'done' }
@@ -115,6 +143,7 @@ export class OpenAIResponsesModelClient implements ModelClient {
       if (!chunk) continue
 
       if (chunk.type === 'response.output_text.delta' && typeof chunk.delta === 'string') {
+        streamedText += chunk.delta
         yield { type: 'text-delta', text: chunk.delta }
       }
       if (
@@ -123,10 +152,48 @@ export class OpenAIResponsesModelClient implements ModelClient {
           chunk.type === 'response.reasoning_summary_text.delta') &&
         typeof chunk.delta === 'string'
       ) {
+        streamedReasoning += chunk.delta
         yield { type: 'reasoning-delta', text: chunk.delta }
       }
+      if (chunk.type === 'response.output_item.done' && isPlainRecord(chunk.item)) {
+        const item = chunk.item
+        collectedOutputItems.push(item as NonNullable<OpenAIResponsesResponse['output']>[number])
+        if (item.type === 'function_call' && typeof item.name === 'string') {
+          const id = typeof item.call_id === 'string'
+            ? item.call_id
+            : typeof item.id === 'string'
+              ? item.id
+              : ''
+          const argumentsText = typeof item.arguments === 'string' ? item.arguments : '{}'
+          if (id) yield { type: 'tool-call', toolCall: normalizeToolCall(id, item.name, argumentsText) }
+        }
+      }
+      if (chunk.type === 'error') {
+        const message = isPlainRecord(chunk.error) && typeof chunk.error.message === 'string'
+          ? chunk.error.message
+          : typeof chunk.message === 'string'
+            ? chunk.message
+            : 'Model provider stream failed.'
+        yield { type: 'error', error: message }
+        return
+      }
       if (chunk.type === 'response.completed' && isPlainRecord(chunk.response)) {
-        yield { type: 'done', response: normalizeOpenAIResponsesResponse(chunk.response as OpenAIResponsesResponse) }
+        const terminal = chunk.response as OpenAIResponsesResponse
+        const output = collectedOutputItems.length > 0
+          ? collectedOutputItems
+          : terminal.output?.length
+            ? terminal.output
+            : streamedText
+              ? [{
+                  type: 'message',
+                  content: [{ type: 'output_text', text: streamedText }],
+                }]
+              : []
+        const normalized = normalizeOpenAIResponsesResponse({ ...terminal, output })
+        if (!normalized.content && streamedText) normalized.content = streamedText
+        if (!normalized.reasoning && streamedReasoning) normalized.reasoning = streamedReasoning
+        yield { type: 'done', response: normalized }
+        return
       }
     }
   }
@@ -134,24 +201,33 @@ export class OpenAIResponsesModelClient implements ModelClient {
 
 export function toOpenAIResponsesPayload(config: ModelProviderConfig, request: ModelRequest): OpenAIResponsesPayload {
   const systemMessages = request.messages.filter(message => message.role === 'system')
+  const supportsMetadata = config.id !== 'xai-oauth' && config.id !== 'openai-codex'
+  const supportsPreviousResponse = config.id !== 'xai-oauth' && config.id !== 'openai-codex'
+  const supportsSamplingControls = config.id !== 'openai-codex'
   return {
     model: request.model ?? config.defaultModel,
     instructions: systemMessages.map(message => message.content).join('\n\n') || undefined,
-    input: request.messages.filter(message => message.role !== 'system').map(toOpenAIResponseInput),
-    temperature: request.temperature,
-    max_output_tokens: request.maxTokens,
+    input: request.messages
+      .filter(message => message.role !== 'system')
+      .flatMap(toOpenAIResponseInput),
+    ...(supportsSamplingControls && request.temperature !== undefined ? { temperature: request.temperature } : {}),
+    ...(supportsSamplingControls && request.maxTokens !== undefined ? { max_output_tokens: request.maxTokens } : {}),
     tools: request.tools?.map(toOpenAIResponseTool),
     tool_choice: request.toolChoice,
     stream: request.stream,
-    metadata: request.metadata,
-    previous_response_id: openAIResponsesContext(request.context)?.responseId,
+    ...(supportsMetadata && request.metadata ? { metadata: request.metadata } : {}),
+    previous_response_id: supportsPreviousResponse
+      ? openAIResponsesContext(request.context)?.responseId
+      : undefined,
+    store: false,
   }
 }
 
 export function normalizeOpenAIResponsesResponse(response: OpenAIResponsesResponse): ModelResponse {
-  const toolCalls = response.output
+  const normalizedToolCalls = response.output
     ?.filter(item => item.type === 'function_call' && item.name && item.call_id)
     .map(item => normalizeToolCall(item.call_id ?? '', item.name ?? '', item.arguments ?? '{}'))
+  const toolCalls = normalizedToolCalls?.length ? normalizedToolCalls : undefined
 
   return {
     id: response.id,
@@ -185,9 +261,50 @@ function normalizeReasoning(response: OpenAIResponsesResponse): string | undefin
   return reasoning || undefined
 }
 
-function toOpenAIResponseInput(message: AgentMessage): OpenAIResponsesPayload['input'][number] {
-  if (message.role === 'assistant') return { role: 'assistant', content: message.content }
-  return { role: 'user', content: message.content }
+function toOpenAIResponseInput(message: AgentMessage): OpenAIResponseInputItem[] {
+  if (message.role === 'tool') {
+    if (!message.toolCallId) return []
+    const items: OpenAIResponseInputItem[] = [{
+      type: 'function_call_output',
+      call_id: message.toolCallId,
+      output: message.content,
+    }]
+    const images = message.contentParts?.filter(part => part.type === 'image') ?? []
+    if (images.length) {
+      items.push({
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'Visual output from the preceding tool result:' },
+          ...images.map(image => ({ type: 'input_image' as const, image_url: `data:${image.mimeType};base64,${image.data}` })),
+        ],
+      })
+    }
+    return items
+  }
+  if (message.role === 'assistant') {
+    const items: OpenAIResponseInputItem[] = []
+    if (message.content) items.push({ role: 'assistant', content: message.content })
+    for (const toolCall of message.toolCalls ?? []) {
+      items.push({
+        type: 'function_call',
+        call_id: toolCall.id,
+        name: toolCall.name,
+        arguments: toolCall.rawArguments || JSON.stringify(toolCall.arguments),
+      })
+    }
+    return items
+  }
+  const images = message.contentParts?.filter(part => part.type === 'image') ?? []
+  if (images.length) {
+    return [{
+      role: 'user',
+      content: [
+        ...(message.content ? [{ type: 'input_text' as const, text: message.content }] : []),
+        ...images.map(image => ({ type: 'input_image' as const, image_url: `data:${image.mimeType};base64,${image.data}` })),
+      ],
+    }]
+  }
+  return [{ role: 'user', content: message.content }]
 }
 
 function toOpenAIResponseTool(tool: AgentToolDefinition): NonNullable<OpenAIResponsesPayload['tools']>[number] {
@@ -210,10 +327,14 @@ function normalizeToolCall(id: string, name: string, argumentsText: string): Age
 }
 
 function normalizeUsage(usage: NonNullable<OpenAIResponsesResponse['usage']>): ModelUsage {
+  const cacheReadTokens = usage.input_tokens_details?.cached_tokens ?? 0
+  const inputTokens = usage.input_tokens ?? 0
   return {
-    inputTokens: usage.input_tokens,
+    inputTokens: Math.max(0, inputTokens - cacheReadTokens),
     outputTokens: usage.output_tokens,
     totalTokens: usage.total_tokens,
+    cacheReadTokens,
+    reasoningTokens: usage.output_tokens_details?.reasoning_tokens,
   }
 }
 

@@ -16,6 +16,7 @@ import { mapCodingAgentResponseEvent } from '../../packages/server/src/services/
 import { applyResponseStreamEvent } from '../../packages/server/src/services/hermes/run-chat/response-stream'
 import { initAllHermesTables } from '../../packages/server/src/db/hermes/schemas'
 import { addMessage, getSession, getSessionDetail, listSessions } from '../../packages/server/src/db/hermes/session-store'
+import { getRecordedUsageTotals, getUsage } from '../../packages/server/src/db/hermes/usage-store'
 
 describe('agent runner endpoint resolver', () => {
   it('adds v1 for provider hosts without an API root path', () => {
@@ -154,6 +155,41 @@ describe('agent runner target registry', () => {
     expect(chat.token).not.toBe(responses.token)
     expect(chat.routeKey).not.toBe(secondUrl.routeKey)
     expect(chat.token).not.toBe(secondUrl.token)
+  })
+
+  it('keeps target tuples distinct when a key part contains the legacy delimiter', () => {
+    type SessionTargetInput = AgentTargetInput & {
+      agentSessionId: string
+      chatSessionId: string
+    }
+    const registry = new AgentTargetRegistry<SessionTargetInput>(
+      input => [input.provider, input.model, input.apiMode, input.baseUrl, input.agentSessionId, input.chatSessionId],
+    )
+    const common = {
+      provider: 'custom:compat-provider',
+      model: 'review-model',
+      baseUrl: 'https://provider.example',
+      apiMode: 'anthropic_messages' as const,
+    }
+
+    const first = registry.register({
+      ...common,
+      apiKey: 'sk-first',
+      agentSessionId: 'agent',
+      chatSessionId: 'chat\0tail',
+    })
+    const second = registry.register({
+      ...common,
+      apiKey: 'sk-second',
+      agentSessionId: 'agent\0chat',
+      chatSessionId: 'tail',
+    })
+
+    expect(first.key).not.toBe(second.key)
+    expect(first.routeKey).not.toBe(second.routeKey)
+    expect(first.token).not.toBe(second.token)
+    expect(registry.find(first.routeKey)?.apiKey).toBe('sk-first')
+    expect(registry.find(second.routeKey)?.apiKey).toBe('sk-second')
   })
 })
 
@@ -319,6 +355,8 @@ describe('coding agent run state', () => {
           id: 'resp-1',
           status: 'completed',
           output: [],
+          model: 'test-model',
+          usage: { input_tokens: 12, output_tokens: 5 },
         },
       },
     })
@@ -330,6 +368,79 @@ describe('coding agent run state', () => {
       activeRunMarker: undefined,
       events: [],
     }))
+    expect(getUsage('chat-session-1')).toEqual(expect.objectContaining({
+      input_tokens: 12,
+      output_tokens: 5,
+      model: 'test-model',
+      profile: 'default',
+    }))
+    manager.shutdown()
+  })
+
+  it('records scoped proxy usage once per model call and skips the scoped turn aggregate', async () => {
+    initAllHermesTables()
+    const manager = new CodingAgentRunManager()
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const agentSessionId = `agent-session-proxy-usage-${suffix}`
+    const chatSessionId = `chat-session-proxy-usage-${suffix}`
+    const state: any = { messages: [], isWorking: false, events: [], queue: [] }
+    ;(manager as any).ensureDbSession = () => {}
+    ;(manager as any).emitToChat = () => {}
+    ;(manager as any).markChatRunCompleted = () => {}
+
+    manager.start({
+      agentSessionId,
+      agentId: 'claude-code',
+      mode: 'scoped',
+      profile: 'default',
+      provider: 'glm',
+      model: 'glm-5-turbo',
+      sessionId: chatSessionId,
+      command: 'claude',
+      args: [],
+      shellCommand: 'claude',
+      workspaceDir: process.cwd(),
+      state,
+    })
+
+    const proxyCompleted = {
+      type: 'response.completed',
+      data: {
+        response: {
+          id: `provider-call-${suffix}`,
+          status: 'completed',
+          model: 'glm-5-turbo',
+          output: [],
+          usage: {
+            prompt_tokens: 120,
+            completion_tokens: 7,
+            prompt_tokens_details: { cached_tokens: 30 },
+          },
+        },
+      },
+    }
+    manager.handleProxyUsageEvent(agentSessionId, proxyCompleted)
+    manager.handleProxyUsageEvent(agentSessionId, proxyCompleted)
+    manager.handleResponseEvent(agentSessionId, {
+      type: 'response.completed',
+      data: {
+        response: {
+          id: `turn-${suffix}`,
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 120, output_tokens: 7 },
+        },
+      },
+    })
+
+    expect(getRecordedUsageTotals(chatSessionId, 'coding_agent')).toEqual({
+      inputTokens: 90,
+      outputTokens: 7,
+      cacheReadTokens: 30,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      apiCalls: 1,
+    })
     manager.shutdown()
   })
 
@@ -921,6 +1032,66 @@ describe('coding agent run state', () => {
     const textMessages = state.messages.filter((message: any) => message.role === 'assistant' && !message.tool_calls?.length)
     expect(textMessages.map((message: any) => message.content)).toEqual(['Initial assistant text.'])
     expect(emitted.filter(event => event.event === 'message.delta').map(event => event.payload.delta)).toEqual(['Initial assistant text.'])
+    manager.shutdown()
+  })
+
+  it('deduplicates a Codex CLI final snapshot already completed by the proxy stream', () => {
+    initAllHermesTables()
+    const manager = new CodingAgentRunManager()
+    const state: any = { messages: [], isWorking: false, events: [], queue: [] }
+    const emitted: Array<{ event: string; payload: any }> = []
+    ;(manager as any).emitToChat = (_sessionId: string, event: string, payload: any) => {
+      emitted.push({ event, payload })
+    }
+    ;(manager as any).markChatRunCompleted = () => {}
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const agentSessionId = `agent-session-codex-proxy-cli-dedupe-${suffix}`
+    const chatSessionId = `chat-session-codex-proxy-cli-dedupe-${suffix}`
+    manager.start({
+      agentSessionId,
+      agentId: 'codex',
+      profile: 'default',
+      provider: 'test-provider',
+      model: 'gpt-5-codex',
+      sessionId: chatSessionId,
+      command: 'codex',
+      args: ['--model', 'gpt-5-codex'],
+      shellCommand: 'codex --model gpt-5-codex',
+      workspaceDir: process.cwd(),
+      state,
+    })
+    const run = (manager as any).runs.get(agentSessionId)
+    run.printResponseId = 'resp_codex_proxy_cli_dedupe'
+    run.printMessageId = 'msg_resp_codex_proxy_cli_dedupe'
+    run.printTextStarted = false
+    run.printText = ''
+    run.printCompleted = false
+    run.responseStartEmitted = false
+    run.terminalEventHandled = false
+    run.codexToolBlocks = new Map()
+    run.codexChatText = ''
+    ;(manager as any).handleClaudePrintResponseEvent(run, {
+      type: 'response.created',
+      data: { response: { id: 'resp_codex_proxy_cli_dedupe', status: 'in_progress', model: 'gpt-5-codex', output: [] } },
+    })
+
+    const text = '好的，我来帮你查询厦门的天气。'
+    manager.handleResponseEvent(agentSessionId, {
+      type: 'response.output_text.delta',
+      data: { type: 'response.output_text.delta', delta: text },
+    })
+    manager.handleResponseEvent(agentSessionId, {
+      type: 'response.output_text.done',
+      data: { type: 'response.output_text.done', text },
+    })
+    ;(manager as any).handleCodexExecLine(run, JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'agent_message', text },
+    }))
+
+    const textMessages = state.messages.filter((message: any) => message.role === 'assistant' && !message.tool_calls?.length)
+    expect(textMessages.map((message: any) => message.content)).toEqual([text])
+    expect(emitted.filter(event => event.event === 'message.delta').map(event => event.payload.delta)).toEqual([text])
     manager.shutdown()
   })
 

@@ -57,6 +57,7 @@ const groupChatApiMock = vi.hoisted(() => {
     cloneRoom: vi.fn(),
     deleteRoom: vi.fn(),
     clearRoomContext: vi.fn(),
+    updateInviteCode: vi.fn(),
   }
 })
 const clientApiMock = vi.hoisted(() => ({
@@ -211,6 +212,71 @@ describe('group chat store baseline lifecycle', () => {
     expect(store.contextStatuses.get('Agent')).toEqual({ agentName: 'Agent', status: 'replying' })
   })
 
+  it('persists the create-form member profile with a new room', async () => {
+    const store = await loadStore()
+    groupChatApiMock.createRoom.mockResolvedValue({
+      room,
+      agents: [],
+    })
+
+    await store.createNewRoom(
+      'Family Room',
+      'ROOM1',
+      undefined,
+      undefined,
+      undefined,
+      { name: '妈妈', description: 'family profile' },
+    )
+
+    expect(groupChatApiMock.createRoom).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'Family Room',
+      inviteCode: 'ROOM1',
+      memberName: '妈妈',
+      memberDescription: 'family profile',
+    }))
+  })
+
+  it('updates only the current room member profile through the joined socket', async () => {
+    const store = await loadStore()
+    groupChatApiMock.socket.emit.mockImplementation((event: string, data?: any, ack?: Function) => {
+      if (event === 'join' && ack) {
+        ack({
+          roomName: 'Family Room',
+          members: [{ ...member, name: 'alice-login', description: '' }],
+          agents: [],
+          typingUsers: [],
+          contextStatuses: [],
+        })
+      }
+      if (event === 'update_member_profile' && ack) {
+        ack({
+          members: [{ ...member, name: data.name, description: data.description }],
+        })
+      }
+      return groupChatApiMock.socket
+    })
+
+    await store.connect()
+    await store.joinRoom('room-1')
+    await store.updateCurrentMemberProfile(' 妈妈 ', ' family profile ')
+
+    expect(groupChatApiMock.socket.emit).toHaveBeenCalledWith(
+      'update_member_profile',
+      {
+        roomId: 'room-1',
+        name: '妈妈',
+        description: 'family profile',
+      },
+      expect.any(Function),
+    )
+    expect(store.userName).toBe('妈妈')
+    expect(store.members[0]).toEqual(expect.objectContaining({
+      name: '妈妈',
+      description: 'family profile',
+    }))
+    expect(localStorage.getItem('gc_user_name')).toBe('妈妈')
+  })
+
   it('joins invite rooms over realtime before fetching protected detail when the socket starts disconnected', async () => {
     const store = await loadStore()
     const order: string[] = []
@@ -261,6 +327,32 @@ describe('group chat store baseline lifecycle', () => {
       content: 'hello room',
     }), expect.any(Function))
     expect(store.error).toBeNull()
+  })
+
+  it('sends a group reference with explicit agent markup and clears the draft reference', async () => {
+    const store = await loadStore()
+    await store.connect()
+    await store.joinRoom('room-1')
+    store.setMessageReference('room-1', {
+      id: 'quoted-1',
+      role: 'assistant',
+      content: '@Agent previous answer',
+      sender: 'Agent',
+    })
+
+    await store.sendMessage('@Agent continue')
+
+    expect(groupChatApiMock.socket.emit).toHaveBeenCalledWith('message', expect.objectContaining({
+      roomId: 'room-1',
+      content: [
+        '<quoted_message sender="Agent">',
+        '@Agent previous answer',
+        '</quoted_message>',
+        '',
+        '@Agent continue',
+      ].join('\n'),
+    }), expect.any(Function))
+    expect(store.activeMessageReference).toBeNull()
   })
 
   it('clears local room context from API response and room_cleared event', async () => {

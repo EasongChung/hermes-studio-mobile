@@ -4,7 +4,7 @@ import { getActiveProfileName, getApiKey, getStoredUsername } from '@/api/client
 import { fetchCurrentUser } from '@/api/auth'
 import { getDownloadUrl } from '@/api/hermes/download'
 import { responseErrorMessage } from '@/utils/http-error'
-import type { Attachment, ContentBlock } from './chat'
+import { formatMessageWithReference, type Attachment, type ContentBlock, type MessageReference } from './chat'
 import {
     connectGroupChat,
     disconnectGroupChat,
@@ -14,6 +14,7 @@ import {
     type RoomInfo,
     type RoomAgent,
     type ChatMessage,
+    type GroupWorkspaceDiffPayload,
     type MemberInfo,
     createRoom,
     listRooms,
@@ -25,6 +26,7 @@ import {
     cloneRoom as cloneRoomApi,
     deleteRoom as deleteRoomApi,
     clearRoomContext,
+    updateInviteCode as updateInviteCodeApi,
     updateRoomWorkspace as updateRoomWorkspaceApi,
 } from '@/api/hermes/group-chat'
 
@@ -137,6 +139,11 @@ export const useGroupChatStore = defineStore('groupChat', () => {
     const currentRoomId = ref<string | null>(null)
     const rooms = ref<RoomInfo[]>([])
     const messages = ref<ChatMessage[]>([])
+    const messageReferences = ref<Map<string, MessageReference>>(new Map())
+    const activeMessageReference = computed(() => {
+        const roomId = currentRoomId.value
+        return roomId ? messageReferences.value.get(roomId) || null : null
+    })
     const members = ref<MemberInfo[]>([])
     const agents = ref<RoomAgent[]>([])
     const roomName = ref('')
@@ -170,6 +177,19 @@ const currentUserAvatar = ref('')
 
     function setAutoPlaySpeech(enabled: boolean) {
         autoPlaySpeechEnabled.value = enabled
+    }
+
+    function setMessageReference(roomId: string, reference: MessageReference) {
+        const next = new Map(messageReferences.value)
+        next.set(roomId, reference)
+        messageReferences.value = next
+    }
+
+    function clearMessageReference(roomId: string) {
+        if (!messageReferences.value.has(roomId)) return
+        const next = new Map(messageReferences.value)
+        next.delete(roomId)
+        messageReferences.value = next
     }
 
     function playMessageSpeech(messageId: string, content: string) {
@@ -308,14 +328,17 @@ const currentUserAvatar = ref('')
 
     async function joinRealtimeRoom(roomId: string, options: { syncMessages?: boolean; inviteCode?: string } = {}) {
         const socket = await ensureRealtimeSocket()
+        // Browser storage is only a first-join default. Once the member row
+        // exists, the server keeps the room-specific profile authoritative.
         const storedName = getStoredGroupUserName()
+        const storedDescription = localStorage.getItem('gc_user_description')
 
         await new Promise<void>((resolve) => {
             socket.emit('join', {
                 roomId,
                 inviteCode: options.inviteCode,
                 name: storedName || undefined,
-                description: localStorage.getItem('gc_user_description') || undefined,
+                description: storedDescription || undefined,
             }, (res: any) => {
                 if (currentRoomId.value !== roomId) {
                     resolve()
@@ -501,6 +524,14 @@ const currentUserAvatar = ref('')
             }
         })
 
+        socket.on('member_updated', (data: { roomId: string; members: MemberInfo[] }) => {
+            if (data.roomId === currentRoomId.value) {
+                members.value = data.members
+                const currentMember = members.value.find(member => member.userId === userId.value)
+                if (currentMember?.name) userName.value = currentMember.name
+            }
+        })
+
         socket.on('typing', (data: { roomId: string; userId: string; userName: string }) => {
             if (data.roomId === currentRoomId.value && !typingUsers.value.has(data.userId)) {
                 const timer = setTimeout(() => typingUsers.value.delete(data.userId), 5000)
@@ -610,6 +641,32 @@ const currentUserAvatar = ref('')
         localStorage.setItem('gc_user_description', description)
     }
 
+    async function updateCurrentMemberProfile(name: string, description = '') {
+        const roomId = currentRoomId.value
+        const socket = getSocket()
+        const normalizedName = name.trim()
+        const normalizedDescription = description.trim()
+        if (!roomId || !socket) throw new Error('Join a room before updating your profile')
+        if (!normalizedName) throw new Error('Name is required')
+
+        await new Promise<void>((resolve, reject) => {
+            socket.emit('update_member_profile', {
+                roomId,
+                name: normalizedName,
+                description: normalizedDescription,
+            }, (res: { error?: string; members?: MemberInfo[] }) => {
+                if (res?.error) {
+                    reject(new Error(res.error))
+                    return
+                }
+                if (res?.members) members.value = res.members
+                userName.value = normalizedName
+                setUserInfo(normalizedName, normalizedDescription)
+                resolve()
+            })
+        })
+    }
+
     // ─── Room Actions ──────────────────────────────────────
     async function joinRoom(roomId: string) {
         isJoining.value = true
@@ -663,18 +720,24 @@ const currentUserAvatar = ref('')
     async function sendMessage(content: string, attachments?: Attachment[]) {
         const socket = getSocket()
         if (!socket || !currentRoomId.value) return
+        const roomId = currentRoomId.value
         emitStopTyping()
         const messageId = uid()
-        let finalContent: string | ContentBlock[] = content.trim()
+        const messageReference = messageReferences.value.get(roomId) || null
+        const submittedContent = messageReference
+            ? formatMessageWithReference(messageReference, content)
+            : content.trim()
+        clearMessageReference(roomId)
+        let finalContent: string | ContentBlock[] = submittedContent
         if (attachments?.length) {
             const uploaded = await uploadGroupFiles(attachments)
-            finalContent = buildGroupContentBlocks(content, attachments, uploaded)
+            finalContent = buildGroupContentBlocks(submittedContent, attachments, uploaded)
             const urlMap = new Map(uploaded.map(f => {
                 return [f.name, getDownloadUrl(normalizeLocalFilePath(f.path), f.name)]
             }))
             messages.value.push({
                 id: messageId,
-                roomId: currentRoomId.value,
+                roomId,
                 senderId: userId.value,
                 senderName: userName.value || 'You',
                 content: JSON.stringify(finalContent),
@@ -687,7 +750,7 @@ const currentUserAvatar = ref('')
         }
 
         return new Promise<void>((resolve, reject) => {
-            socket!.emit('message', { roomId: currentRoomId.value, id: messageId, content: finalContent }, (res: { id?: string; error?: string }) => {
+            socket!.emit('message', { roomId, id: messageId, content: finalContent }, (res: { id?: string; error?: string }) => {
                 if (res.error) {
                     messages.value = messages.value.filter(m => m.id !== messageId)
                     reject(new Error(res.error))
@@ -707,11 +770,20 @@ const currentUserAvatar = ref('')
         }
     }
 
-    async function createNewRoom(name: string, inviteCode: string, agentList?: { profile: string; name?: string; description?: string; invited?: boolean }[], compression?: { triggerTokens: number; maxHistoryTokens: number; tailMessageCount: number }, workspace?: string) {
+    async function createNewRoom(
+        name: string,
+        inviteCode: string,
+        agentList?: { profile: string; name?: string; description?: string; invited?: boolean }[],
+        compression?: { triggerTokens: number; maxHistoryTokens: number; tailMessageCount: number },
+        workspace?: string,
+        memberProfile?: { name: string; description?: string },
+    ) {
         try {
             const res = await createRoom({
                 name,
                 inviteCode,
+                memberName: memberProfile?.name,
+                memberDescription: memberProfile?.description,
                 agents: agentList,
                 compression: compression || { triggerTokens: 100000, maxHistoryTokens: 32000, tailMessageCount: 10 },
                 workspace: workspace || undefined,
@@ -744,6 +816,7 @@ const currentUserAvatar = ref('')
         try {
             await deleteRoomApi(roomId)
             rooms.value = rooms.value.filter(r => r.id !== roomId)
+            clearMessageReference(roomId)
             if (currentRoomId.value === roomId) {
                 currentRoomId.value = null
                 messages.value = []
@@ -771,9 +844,11 @@ const currentUserAvatar = ref('')
 
     async function clearCurrentRoomContext() {
         if (!currentRoomId.value) return
+        const roomId = currentRoomId.value
         try {
-            const res = await clearRoomContext(currentRoomId.value)
+            const res = await clearRoomContext(roomId)
             messages.value = []
+            clearMessageReference(roomId)
             resetMessagePaging()
             typingUsers.value.clear()
             contextStatuses.value.clear()
@@ -794,6 +869,23 @@ const currentUserAvatar = ref('')
                 if (currentRoomId.value === roomId) roomName.value = res.room.name
             }
             return res.room
+        } catch (err: any) {
+            error.value = err.message
+            throw err
+        }
+    }
+
+    async function setRoomInviteCode(roomId: string, inviteCode: string) {
+        const nextCode = inviteCode.trim()
+        if (!nextCode) throw new Error('inviteCode is required')
+        try {
+            await updateInviteCodeApi(roomId, nextCode)
+            const room = rooms.value.find(r => r.id === roomId)
+            if (room) {
+                room.inviteCode = nextCode
+                rooms.value = [...rooms.value]
+            }
+            return nextCode
         } catch (err: any) {
             error.value = err.message
             throw err
@@ -893,6 +985,7 @@ const currentUserAvatar = ref('')
         pendingApprovals,
         activePendingApproval,
         autoPlaySpeechEnabled,
+        activeMessageReference,
         totalMessages,
         loadedMessageCount,
         hasMoreBefore,
@@ -910,7 +1003,10 @@ const currentUserAvatar = ref('')
         connect,
         disconnect,
         setUserInfo,
+        updateCurrentMemberProfile,
         setAutoPlaySpeech,
+        setMessageReference,
+        clearMessageReference,
         joinRoom,
         loadOlderMessages,
         sendMessage,
@@ -925,6 +1021,7 @@ const currentUserAvatar = ref('')
         cloneRoom,
         clearCurrentRoomContext,
         setRoomWorkspace,
+        setRoomInviteCode,
         loadAgents,
         addAgentToRoom,
         removeAgentFromRoom,
@@ -960,6 +1057,31 @@ function parseWorkspaceDiffPayload(value: unknown): unknown {
     } catch {
         return value
     }
+}
+
+function groupWorkspaceDiffPayload(value: unknown): GroupWorkspaceDiffPayload | null {
+    const parsed = parseWorkspaceDiffPayload(value)
+    return parsed && typeof parsed === 'object' && (parsed as any).kind === 'workspace_diff'
+        ? parsed as GroupWorkspaceDiffPayload
+        : null
+}
+
+function attachWorkspaceDiffsToParentMessages(messages: ChatMessage[]): ChatMessage[] {
+    const mapped: ChatMessage[] = messages.map(message => ({ ...message, workspaceChanges: [] }))
+    const assistantById = new Map(
+        mapped
+            .filter(message => message.role === 'assistant')
+            .map(message => [message.id, message]),
+    )
+    return mapped.filter(message => {
+        if ((message.toolName || message.tool_name) !== 'workspace_diff') return true
+        const payload = groupWorkspaceDiffPayload(message.toolResult ?? message.content)
+        const parentMessageId = String(payload?.parent_message_id || '').trim()
+        const parent = parentMessageId ? assistantById.get(parentMessageId) : undefined
+        if (!payload || !parent) return true
+        parent.workspaceChanges!.push(payload)
+        return false
+    })
 }
 
 function mapGroupMessages(msgs: ChatMessage[]): ChatMessage[] {
@@ -1047,5 +1169,5 @@ function mapGroupMessages(msgs: ChatMessage[]): ChatMessage[] {
 
         result.push(msg)
     }
-    return result
+    return attachWorkspaceDiffsToParentMessages(result)
 }

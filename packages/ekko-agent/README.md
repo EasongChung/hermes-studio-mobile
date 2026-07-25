@@ -15,6 +15,17 @@ Supported request styles:
 - prompt completion
 - custom runtime
 
+First-class OAuth provider presets:
+
+- `nous` — OpenAI Chat Completions at the Nous inference API
+- `openai-codex` — OpenAI Responses at the ChatGPT Codex backend
+- `xai-oauth` — OpenAI Responses at the xAI API
+- `qwen-oauth` — OpenAI Chat Completions at the Qwen Portal API
+
+Pass the current OAuth access token as `apiKey`. Login, token persistence, and
+refresh remain the caller's responsibility; the preset supplies the provider's
+default endpoint, request style, and required identity headers.
+
 Default endpoints:
 
 | Style | Default endpoint |
@@ -54,6 +65,8 @@ Built-in tools:
 - `read_file` reads a text file.
 - `write_file` writes text content and creates parent directories by default.
 - `terminal_exec` runs a command with an argument array and `shell: false`.
+- `skill_list` lists or searches skills under the agent's configured `skillDirectory`.
+- `skill_view` loads the complete `SKILL.md` for one skill in that directory.
 
 Use `workspaceRoot` to keep file and terminal working directories inside a
 specific workspace.
@@ -84,17 +97,20 @@ const result = await tools.execute('terminal_exec', {
 events together. The default `maxSteps` is `90`, matching Hermes' regular agent
 turn budget.
 
+In development, Ekko Agent stores its SQLite database at
+`packages/ekko-agent/sql-data/ekko-agent.db`. It uses the same single-file
+SQLite/DELETE journal layout as `packages/server/data/hermes-web-ui.db`, so the
+database can be opened directly in Navicat. Tests remain isolated in temporary
+directories. While the production Ekko Agent entry remains hidden, the server
+starts Ekko Agent with memory disabled and does not create the `ekko` directory
+or `HERMES_WEB_UI_HOME/ekko/ekko.db`.
+
 ```ts
-import { AgentRuntime, createDefaultToolRegistry } from './src/index'
+import { AgentRuntime } from './src/index'
 
 const runtime = new AgentRuntime({
   modelClient: client,
-  tools: createDefaultToolRegistry(),
-  skills: [{
-    id: 'project',
-    name: 'Project Skill',
-    instructions: 'Follow the project conventions before editing files.',
-  }],
+  skillDirectory: '/path/to/skills',
 })
 
 const result = await runtime.run({
@@ -107,6 +123,10 @@ const result = await runtime.run({
   },
 })
 ```
+
+Set `toolsEnabled: false` to omit all tool sources (built-ins, MCP, memory,
+and skill tools). Set `skillsEnabled: false` to omit constructor and per-run
+skills. The switches are independent and default to `true`.
 
 ## Commands
 

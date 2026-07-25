@@ -5,8 +5,8 @@ import type { ChatMessage } from '../../../lib/context-compressor'
  */
 export type ContentBlock =
   | { type: 'text'; text: string }
-  | { type: 'image'; name: string; path: string; media_type: string }
-  | { type: 'file'; name: string; path: string; media_type?: string }
+  | { type: 'image'; name: string; path: string; media_type: string; context?: string }
+  | { type: 'file'; name: string; path: string; media_type?: string; context?: string }
 
 export interface SessionMessage {
   id: number | string
@@ -56,6 +56,17 @@ export interface QueuedRun {
   commandPassthrough?: boolean
   originSocketId?: string
   goalContinuation?: boolean
+  reasoningEffort?: string
+  backgroundDelegationId?: string
+  backgroundClaimId?: string
+  autonomous?: boolean
+}
+
+export interface BackgroundDelegationState {
+  delegationId: string
+  status: 'running' | 'delivering' | 'completed' | 'failed' | 'interrupted'
+  profile?: string
+  updatedAt: number
 }
 
 export interface SessionState {
@@ -79,6 +90,7 @@ export interface SessionState {
   responseRun?: ResponseRunState
   source?: ChatRunSource
   bridgePendingAssistantContent?: string
+  bridgeAssistantMessageId?: string
   bridgePendingReasoningContent?: string
   bridgePendingToolCallMarkup?: string
   bridgeOutput?: string
@@ -90,6 +102,8 @@ export interface SessionState {
     startedAt: number
   }>
   bridgeCompressionResults?: Record<string, BridgeCompressionResult>
+  backgroundTasks?: Record<string, Record<string, unknown>>
+  backgroundDelegations?: Record<string, BackgroundDelegationState>
 }
 
 export interface ResponseRunState {

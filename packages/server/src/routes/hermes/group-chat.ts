@@ -2,13 +2,21 @@ import Router from '@koa/router'
 import type { GroupChatServer } from '../../services/hermes/group-chat'
 import { isReservedMentionName } from '../../services/hermes/group-chat/mention-routing'
 import { assertAllowedWorkspaceFolder } from '../../services/hermes/workspace-path'
+import {
+    canManageGroupChatRoom as canManageRoom,
+    canReadGroupChatRoom as canReadRoom,
+    groupChatUserProfiles as userProfiles,
+} from '../../services/hermes/group-chat/access'
+import { setGroupChatRuntimeServer } from '../../services/hermes/group-chat/runtime'
+import * as ctrl from '../../controllers/hermes/group-chat-workspace'
 
 export const groupChatRoutes = new Router()
 
 let chatServer: GroupChatServer | null = null
 
-export function setGroupChatServer(server: GroupChatServer) {
+export function setGroupChatServer(server: GroupChatServer | null) {
     chatServer = server
+    setGroupChatRuntimeServer(server)
 }
 
 export function getGroupChatServer(): GroupChatServer | null {
@@ -47,32 +55,6 @@ function agentConnectFailureBody(profile: string, err: any) {
     }
 }
 
-function userProfiles(user: any): string[] {
-    return Array.isArray(user?.profiles) ? user.profiles.map(String).filter(Boolean) : []
-}
-
-function isRoomOwner(room: any, user: any): boolean {
-    return typeof user?.id === 'number' && Number(room?.ownerAuthUserId || 0) === user.id
-}
-
-function hasProfileRoomAccess(storage: ReturnType<GroupChatServer['getStorage']>, roomId: string, user: any): boolean {
-    const profiles = userProfiles(user)
-    if (!profiles.length || typeof storage.getRoomsForProfiles !== 'function') return false
-    return storage.getRoomsForProfiles(profiles).some(room => room.id === roomId)
-}
-
-function canManageRoom(storage: ReturnType<GroupChatServer['getStorage']>, roomId: string, user: any): boolean {
-    if (!user || user.role === 'super_admin') return true
-    const room = typeof storage.getRoom === 'function' ? storage.getRoom(roomId) : null
-    if (room && isRoomOwner(room, user)) return true
-    return hasProfileRoomAccess(storage, roomId, user)
-}
-
-function canReadRoom(storage: ReturnType<GroupChatServer['getStorage']>, roomId: string, user: any): boolean {
-    if (canManageRoom(storage, roomId, user)) return true
-    return typeof user?.id === 'number' && typeof storage.getMemberByAuthUserId === 'function' && !!storage.getMemberByAuthUserId(roomId, user.id)
-}
-
 function serializeRoom(room: any, includeManageFields: boolean) {
     if (!room) return room
     const { ownerAuthUserId: _ownerAuthUserId, ...rest } = room
@@ -86,11 +68,17 @@ function serializeRoom(room: any, includeManageFields: boolean) {
     return serialized
 }
 
-function persistRoomCreator(storage: ReturnType<GroupChatServer['getStorage']>, roomId: string, user: any): void {
+function persistRoomCreator(
+    storage: ReturnType<GroupChatServer['getStorage']>,
+    roomId: string,
+    user: any,
+    memberName?: string,
+    memberDescription?: string,
+): void {
     if (typeof user?.id !== 'number' || user.id <= 0) return
     storage.setRoomOwnerAuthUserId?.(roomId, user.id)
-    const username = String(user.username || `User-${user.id}`)
-    storage.addRoomMember(roomId, `auth:${user.id}`, username, '', '', user.id)
+    const username = memberName?.trim() || String(user.username || `User-${user.id}`)
+    storage.addRoomMember(roomId, `auth:${user.id}`, username, memberDescription?.trim() || '', '', user.id)
 }
 
 function visibleRoomsForUser(storage: ReturnType<GroupChatServer['getStorage']>, user: any) {
@@ -124,6 +112,7 @@ async function connectAndPersistRoomAgent(server: GroupChatServer, roomId: strin
         name,
         description,
         invited,
+        backgroundDelegationEnabled: false,
     })
 
     const storage = server.getStorage()
@@ -148,16 +137,31 @@ groupChatRoutes.post('/api/hermes/group-chat/rooms', async (ctx) => {
         return
     }
 
-    const { name, inviteCode, agents, compression, workspace } = ctx.request.body as {
+    const { name, inviteCode, agents, compression, workspace, memberName, memberDescription } = ctx.request.body as {
         name?: string
         inviteCode?: string
         agents?: { profile: string; name?: string; description?: string; invited?: boolean }[]
         compression?: { triggerTokens?: number; maxHistoryTokens?: number; tailMessageCount?: number }
         workspace?: string
+        memberName?: string
+        memberDescription?: string
     }
     if (!name || !inviteCode) {
         ctx.status = 400
         ctx.body = { error: 'name and inviteCode are required' }
+        return
+    }
+    if (
+        (memberName !== undefined && typeof memberName !== 'string') ||
+        (memberDescription !== undefined && typeof memberDescription !== 'string')
+    ) {
+        ctx.status = 400
+        ctx.body = { error: 'memberName and memberDescription must be strings' }
+        return
+    }
+    if ((memberName?.trim().length || 0) > 120 || (memberDescription?.trim().length || 0) > 2000) {
+        ctx.status = 400
+        ctx.body = { error: 'Member profile is too long' }
         return
     }
     const reservedAgent = (agents || []).find(a => isReservedMentionName(a.name || a.profile))
@@ -194,7 +198,7 @@ groupChatRoutes.post('/api/hermes/group-chat/rooms', async (ctx) => {
         workspace: normalizedWorkspace,
     } : { workspace: normalizedWorkspace }
     storage.saveRoom(roomId, name, inviteCode, compressionConfig)
-    persistRoomCreator(storage, roomId, ctx.state?.user)
+    persistRoomCreator(storage, roomId, ctx.state?.user, memberName, memberDescription)
 
     const addedAgents = []
     const agentResults = []
@@ -302,6 +306,15 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId', async (ctx) => {
     const members = storage.getRoomMembers(ctx.params.roomId)
     ctx.body = { room: serializeRoom(room, canManage), messages, agents, members, total, offset, limit, hasMore: offset + messages.length < total }
 })
+
+groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/workspace-files/list', ctrl.listWorkspaceFiles)
+groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/workspace-file/read', ctrl.readWorkspaceFile)
+groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/workspace-file/content', ctrl.readWorkspaceFileContent)
+groupChatRoutes.put('/api/hermes/group-chat/rooms/:roomId/workspace-file/write', ctrl.writeWorkspaceFile)
+groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/workspace-file/mkdir', ctrl.mkdirWorkspaceFile)
+groupChatRoutes.delete('/api/hermes/group-chat/rooms/:roomId/workspace-file/delete', ctrl.deleteWorkspaceFile)
+groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/workspace-file/rename', ctrl.renameWorkspaceFile)
+groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/workspace-file/copy', ctrl.copyWorkspaceFile)
 
 // List rooms
 groupChatRoutes.get('/api/hermes/group-chat/rooms', async (ctx) => {

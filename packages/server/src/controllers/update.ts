@@ -3,9 +3,11 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { createServer } from 'net'
 import { delimiter, dirname, extname, join, resolve } from 'path'
 import { getWebUiHome } from '../config'
+import { isDockerContainer } from '../services/runtime-environment'
 
 let updateInProgress = false
 const NODE_ENVIRONMENT_MISSING_CODE = 'node_environment_missing'
+const DOCKER_ENVIRONMENT_CODE = 'docker_environment'
 
 const PREVIEW_DIR_NAME = 'hermes-web-ui-pereview'
 const PREVIEW_HOME_DIR_NAME = 'hermes-web-ui-pereview-home'
@@ -1061,6 +1063,20 @@ export async function handleUpdate(ctx: any) {
     ctx.body = {
       success: false,
       message: 'hermes-web-ui update is already in progress',
+    }
+    return
+  }
+
+  // Docker 环境中 npm 全局安装方式不可用，引导用户使用 docker pull 升级
+  if (isDockerContainer()) {
+    ctx.status = 400
+    ctx.body = {
+      success: false,
+      code: DOCKER_ENVIRONMENT_CODE,
+      message: 'hermes-web-ui update is not available inside Docker. '
+        + 'Please pull a new image and recreate the container:\n\n'
+        + '  docker compose pull\n'
+        + '  docker compose up -d --force-recreate',
     }
     return
   }

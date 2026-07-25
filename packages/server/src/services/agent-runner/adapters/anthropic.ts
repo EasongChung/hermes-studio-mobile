@@ -6,7 +6,7 @@ export interface AnthropicAdapterTarget {
 
 export function targetReasoningEffort(target: any): string {
   const effort = String(target?.reasoningEffort || '').trim()
-  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(effort) ? effort : ''
+  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(effort) ? effort : ''
 }
 
 function stringifyContent(value: unknown): string {
@@ -124,6 +124,7 @@ export function anthropicToOpenAiChat(body: any, target: AnthropicAdapterTarget,
     ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
     ...(tools?.length ? { tools } : {}),
     stream,
+    ...(stream ? { stream_options: { include_usage: true } } : {}),
   }
 }
 

@@ -1,5 +1,6 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import { hasApiKey, isStoredSuperAdmin } from '@/api/client'
+import { hasDesktopBrowserBridge } from '@/utils/desktop-bridge'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -25,6 +26,12 @@ const router = createRouter({
       path: '/hermes/session/:sessionId',
       name: 'hermes.session',
       component: () => import('@/views/hermes/ChatView.vue'),
+    },
+    {
+      path: '/desktop-chat/:sessionId',
+      name: 'desktop.chat',
+      component: () => import('@/views/hermes/ChatView.vue'),
+      meta: { standaloneChat: true },
     },
     {
       path: '/hermes/history',
@@ -173,6 +180,16 @@ const router = createRouter({
     },
   ],
 })
+
+// Desktop exposes a dedicated settings page. Actual browsing stays inside the
+// chat tool panel so this route never creates or positions a WebContentsView.
+if (hasDesktopBrowserBridge()) {
+  router.addRoute({
+    path: '/hermes/browser',
+    name: 'hermes.browser',
+    component: () => import('@/views/hermes/DesktopBrowserView.vue'),
+  })
+}
 
 async function ensureDesktopAuth(): Promise<void> {
   if (hasApiKey()) return

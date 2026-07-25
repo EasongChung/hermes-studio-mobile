@@ -3,7 +3,11 @@ import type { AgentToolDefinition } from '../model/types'
 export interface AgentToolContext {
   cwd?: string
   workspaceRoot?: string
+  workspaceId?: string
+  userId?: string
   sessionId?: string
+  profileId?: string
+  sourceMessageIds?: string[]
   browserSessionId?: string
   mcpServers?: Record<string, unknown>
   timeoutMs?: number
@@ -13,9 +17,14 @@ export interface AgentToolContext {
 export interface AgentToolResult {
   ok: boolean
   content: string
+  contentParts?: AgentToolContentPart[]
   data?: unknown
   error?: string
 }
+
+export type AgentToolContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data: string; mimeType: string }
 
 export interface AgentTool<TInput extends Record<string, unknown> = Record<string, unknown>> {
   definition: AgentToolDefinition
