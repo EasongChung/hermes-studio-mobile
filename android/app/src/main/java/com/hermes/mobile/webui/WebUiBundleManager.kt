@@ -517,12 +517,13 @@ class WebUiBundleManager(
                 val f = stateFile(serverOrigin)
                 val tmp = File(f.parentFile, "$STATE_FILE.tmp")
                 tmp.writeText(state.toJson().toString(), Charsets.UTF_8)
-                // 不用 if 作 try 末尾表达式，避免 Kotlin 要求 else 分支
                 val renamed = tmp.renameTo(f)
                 if (!renamed) {
                     tmp.copyTo(f, overwrite = true)
                     tmp.delete()
                 }
+                // try 末尾必须是非 if 表达式，否则 Kotlin 要求 else（与 catch 的 Unit 对齐）
+                Unit
             } catch (e: Exception) {
                 Log.w(TAG, "writeState failed: ${e.message}")
             }
