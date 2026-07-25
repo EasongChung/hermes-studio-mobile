@@ -517,7 +517,9 @@ class WebUiBundleManager(
                 val f = stateFile(serverOrigin)
                 val tmp = File(f.parentFile, "$STATE_FILE.tmp")
                 tmp.writeText(state.toJson().toString(), Charsets.UTF_8)
-                if (!tmp.renameTo(f)) {
+                // 不用 if 作 try 末尾表达式，避免 Kotlin 要求 else 分支
+                val renamed = tmp.renameTo(f)
+                if (!renamed) {
                     tmp.copyTo(f, overwrite = true)
                     tmp.delete()
                 }
