@@ -312,6 +312,12 @@ class MainActivity : AppCompatActivity() {
                 tryServeApiCache(method, path, uri.encodedQuery, request.requestHeaders)?.let { return it }
 
                 if (API_PATH_PREFIXES.any { path.startsWith(it) }) return null
+                // 仅对 GET/HEAD 提供本地静态资源；其它方法放行网络
+                if (!method.equals("GET", ignoreCase = true) &&
+                    !method.equals("HEAD", ignoreCase = true)
+                ) {
+                    return null
+                }
                 // WebUI：运行时本地包优先 → APK 出厂 assets → 网络
                 return tryServeWebUiAsset(path)
             }
@@ -468,6 +474,7 @@ class MainActivity : AppCompatActivity() {
         Log.w(TAG, "[HermesWebUi] rollback applied reason=$reason")
         Handler(Looper.getMainLooper()).post {
             if (::webView.isInitialized) {
+                // 不走 activatePending，避免回退后又立刻切到坏的 pending
                 webView.loadUrl(serverUrl)
             }
         }

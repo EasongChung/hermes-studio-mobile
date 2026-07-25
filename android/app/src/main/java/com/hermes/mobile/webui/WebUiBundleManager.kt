@@ -76,11 +76,12 @@ class WebUiBundleManager(
 
     fun openVersionFile(serverOrigin: String, versionId: String, path: String): Pair<InputStream, String>? {
         val rel = pathToRelative(path)
-        val file = File(versionDir(serverOrigin, versionId), rel)
-        if (!file.exists() || !file.isFile) return null
-        // 防止路径穿越
         val root = versionDir(serverOrigin, versionId).canonicalFile
-        if (!file.canonicalFile.path.startsWith(root.path)) return null
+        val file = File(root, rel).canonicalFile
+        if (!file.exists() || !file.isFile) return null
+        // 防止路径穿越：必须落在版本目录内（含 separator，避免 /a 匹配 /ab）
+        val rootPath = root.path.let { if (it.endsWith(File.separator)) it else it + File.separator }
+        if (file != root && !file.path.startsWith(rootPath)) return null
         val ext = rel.substringAfterLast('.', "").lowercase()
         return FileInputStream(file) to ext
     }
@@ -166,14 +167,24 @@ class WebUiBundleManager(
     }
 
     private fun probeAndMaybeDownload(serverOrigin: String, force: Boolean) {
-        val state = readState(serverOrigin)
+        var state = readState(serverOrigin)
         val now = System.currentTimeMillis()
+
+        // 进程被杀可能导致 downloadingId 残留：无对应 tmp 则清锁，避免永久跳过探测
+        state.downloadingId?.let { id ->
+            val tmp = File(versionsDir(serverOrigin), ".tmp-$id")
+            if (!tmp.exists()) {
+                Log.w(TAG, "clear stale downloadingId=$id")
+                state = state.copy(downloadingId = null)
+                writeState(serverOrigin, state)
+            } else if (!force) {
+                Log.d(TAG, "probe skip: downloading id=$id")
+                return
+            }
+        }
+
         if (!force && state.lastProbeAt > 0 && now - state.lastProbeAt < policy.probeMinIntervalMs) {
             Log.d(TAG, "probe skip: interval origin=${originKey(serverOrigin)}")
-            return
-        }
-        if (state.downloadingId != null) {
-            Log.d(TAG, "probe skip: downloading id=${state.downloadingId}")
             return
         }
 
@@ -199,13 +210,15 @@ class WebUiBundleManager(
 
         val current = readState(serverOrigin)
         val activeMeta = current.activeId?.let { readMeta(serverOrigin, it) }
-        if (activeMeta?.contentHash == contentHash ||
+        val localHasVersion = File(versionDir(serverOrigin, versionId), "index.html").exists()
+        val alreadyKnown = activeMeta?.contentHash == contentHash ||
             current.pendingActivateId == versionId ||
-            current.versionOrder.contains(versionId)
-        ) {
+            (current.versionOrder.contains(versionId) && localHasVersion)
+
+        if (alreadyKnown) {
             // 已有同 hash：若尚未 active 且目录完整，可标 pending
             if (current.activeId != versionId &&
-                File(versionDir(serverOrigin, versionId), "index.html").exists() &&
+                localHasVersion &&
                 current.pendingActivateId != versionId
             ) {
                 writeState(serverOrigin, current.copy(pendingActivateId = versionId))
@@ -214,7 +227,7 @@ class WebUiBundleManager(
                 Log.d(TAG, "probe: up-to-date hash=${contentHash.take(12)}")
             }
             // 若还没有任何 active，把该版本或现有目录激活
-            if (current.activeId == null && File(versionDir(serverOrigin, versionId), "index.html").exists()) {
+            if (current.activeId == null && localHasVersion) {
                 writeState(
                     serverOrigin,
                     readState(serverOrigin).copy(activeId = versionId, pendingActivateId = null)
