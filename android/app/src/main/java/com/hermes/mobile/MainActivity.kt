@@ -27,6 +27,7 @@ import com.hermes.mobile.cache.ApiCacheManager
 import com.hermes.mobile.cache.CacheKeyBuilder
 import com.hermes.mobile.cache.CacheableApiMatcher
 import com.hermes.mobile.client.HermesChromeClient
+import com.hermes.mobile.config.AuthTokenStore
 import com.hermes.mobile.config.ServerManager
 import com.hermes.mobile.webui.WebUiBundleManager
 import com.hermes.mobile.webui.WebUiBundlePolicy
@@ -90,6 +91,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var apiCacheManager: ApiCacheManager
     private lateinit var webUiBundleManager: WebUiBundleManager
+    private lateinit var authTokenStore: AuthTokenStore
     private val webUiPolicy = WebUiBundlePolicy()
     private var lastWebUiRollbackAt = 0L
     private var serverUrl: String = ""
@@ -102,6 +104,10 @@ class MainActivity : AppCompatActivity() {
     private var isRestoringState = false
     /** MainActivity 创建时间，用于限制启动早期软刷新窗口。 */
     private val appStartTimeMs = System.currentTimeMillis()
+    /** 诊断：Cache-first page loaded 时间戳；用于 sessions 空窗定责 */
+    private var pageCacheFirstLoadedAtMs: Long = 0L
+    /** 诊断：本生命周期是否已记录首次 sessions 请求 */
+    private var firstSessionsProbeLogged = false
     /**
      * 当前 Activity 生命周期内是否已触发过会话列表软刷新。
      * 防止 cache hit → soft refresh → 再次 cache hit → 再次 soft refresh 的循环。
@@ -153,6 +159,7 @@ class MainActivity : AppCompatActivity() {
         webView = findViewById(R.id.webView)
         apiCacheManager = ApiCacheManager(this)
         webUiBundleManager = WebUiBundleManager(this, webUiPolicy)
+        authTokenStore = AuthTokenStore(this)
         webUiBundleManager.ensureOriginReady(serverOrigin)
 
         // 如果有保存的 WebView 状态，优先恢复（横竖屏切换后）
@@ -160,7 +167,8 @@ class MainActivity : AppCompatActivity() {
             if (loginUsername.isNotBlank() && loginPassword.isNotBlank()) {
                 authToken = savedInstanceState.getString("auth_token")
                 if (authToken != null) {
-                    Log.d(TAG, "Restoring WebView state with auth token")
+                    // 不打印 token 内容
+                    Log.d(TAG, "Restoring WebView state with auth token present=true")
                     isRestoringState = true
                     configureWebView()
                     webView.restoreState(savedInstanceState)
@@ -169,7 +177,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 如果在凭据，先登录获取 token，再配置 WebView 并加载页面
+        // 有凭据：优先复用持久化 token（R2），否则 POST login
         if (loginUsername.isNotBlank() && loginPassword.isNotBlank()) {
             performLoginFirst()
         } else {
@@ -179,10 +187,73 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 先登录获取 token，再配置 WebView 并加载页面
-     * 确保 token 在 SPA 初始化前就绪
+     * 复用持久化 token 后，后台用账号密码刷新 JWT。
+     * 成功则更新 store 与内存；401/失败则 clear store（不影响当前已加载页）。
+     */
+    private fun refreshPersistedTokenInBackground() {
+        if (loginUsername.isBlank() || loginPassword.isBlank() || serverOrigin.isBlank()) return
+        Thread {
+            try {
+                val loginUrl = "${serverOrigin}/api/auth/login"
+                val jsonBody = JSONObject().apply {
+                    put("username", loginUsername)
+                    put("password", loginPassword)
+                }
+                val conn = URL(loginUrl).openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.doOutput = true
+                conn.connectTimeout = 15000
+                conn.readTimeout = 15000
+                OutputStreamWriter(conn.outputStream).use { w ->
+                    w.write(jsonBody.toString())
+                    w.flush()
+                }
+                val code = conn.responseCode
+                if (code == 200) {
+                    val body = conn.inputStream.bufferedReader().readText()
+                    val token = JSONObject(body).optString("token", "")
+                    if (token.isNotBlank()) {
+                        authToken = token
+                        authTokenStore.save(serverOrigin, loginUsername, token)
+                        Log.d(TAG, "Login background refresh ok tokenLen=${token.length}")
+                    }
+                } else {
+                    authTokenStore.clear(serverOrigin, loginUsername)
+                    Log.w(TAG, "Login background refresh failed HTTP $code, cleared store")
+                }
+                conn.disconnect()
+            } catch (e: Exception) {
+                Log.w(TAG, "Login background refresh error: ${e.message}")
+            }
+        }.start()
+    }
+
+    /**
+     * 先拿到 token，再配置 WebView 并加载页面，确保 SPA 初始化前已注入鉴权。
+     *
+     * 【R2 Token 持久化】
+     * 1. 先读 AuthTokenStore：命中则直接用，跳过网络登录（约省 0.8~1.2s）
+     * 2. 未命中：POST /api/auth/login，成功后写入 store
+     * 3. 复用后后台静默刷新；失败清 store
+     * 4. 日志只打 tokenLen / 来源，绝不输出 JWT 正文
      */
     private fun performLoginFirst() {
+        // 快速路径：本地持久化 token（不阻塞首屏）
+        val cached = authTokenStore.load(serverOrigin, loginUsername)
+        if (!cached.isNullOrBlank()) {
+            authToken = cached
+            Log.d(
+                TAG,
+                "Login reuse persisted token tokenLen=${cached.length} user=${loginUsername.take(1)}***"
+            )
+            configureWebView()
+            loadFrontend()
+            // 后台静默刷新 token；失败则清持久化，下次冷启动走完整登录
+            refreshPersistedTokenInBackground()
+            return
+        }
+
         val loginUrl = "${serverOrigin}/api/auth/login"
         val jsonBody = JSONObject().apply {
             put("username", loginUsername)
@@ -214,17 +285,24 @@ class MainActivity : AppCompatActivity() {
                     val token = json.optString("token", "")
                     if (token.isNotBlank()) {
                         authToken = token
-                        Log.d(TAG, "Login success, token=${token.take(20)}...")
+                        authTokenStore.save(serverOrigin, loginUsername, token)
+                        // 【E 脱敏】禁止 log JWT 正文
+                        Log.d(TAG, "Login success tokenLen=${token.length} persisted=true")
+                    } else {
+                        Log.w(TAG, "Login success but empty token field")
                     }
                 } else {
-                    val errorReader = BufferedReader(InputStreamReader(conn.errorStream))
-                    val errorResponse = errorReader.readText()
-                    errorReader.close()
-                    Log.w(TAG, "Login failed, HTTP $responseCode: $errorResponse")
+                    // 错误体可能含敏感信息，只打长度与码
+                    val errorLen = try {
+                        conn.errorStream?.readBytes()?.size ?: 0
+                    } catch (_: Exception) {
+                        0
+                    }
+                    Log.w(TAG, "Login failed HTTP $responseCode bodyBytes=$errorLen")
                 }
                 conn.disconnect()
             } catch (e: Exception) {
-                Log.e(TAG, "Login error: ${e.message}", e)
+                Log.e(TAG, "Login error: ${e.message}")
             }
 
             // 无论登录成功与否，都加载页面（失败则手动登录）
@@ -360,7 +438,12 @@ class MainActivity : AppCompatActivity() {
                 // 非首次启动 + 缓存模式加载完成后，切回 LOAD_DEFAULT
                 // 确保后续 API 请求走网络获取最新数据
                 if (view != null && view.settings.cacheMode == WebSettings.LOAD_CACHE_ELSE_NETWORK) {
-                    Log.d(TAG, "Cache-first page loaded, switching to LOAD_DEFAULT")
+                    pageCacheFirstLoadedAtMs = System.currentTimeMillis()
+                    val sinceStart = pageCacheFirstLoadedAtMs - appStartTimeMs
+                    Log.d(
+                        TAG,
+                        "Cache-first page loaded, switching to LOAD_DEFAULT sinceStartMs=$sinceStart"
+                    )
                     view.settings.cacheMode = WebSettings.LOAD_DEFAULT
                     view.evaluateJavascript("console.log('[HermesMobile] Cache mode restored to LOAD_DEFAULT')", null)
                 }
@@ -858,6 +941,33 @@ class MainActivity : AppCompatActivity() {
             TAG,
             "[HermesCacheProbe] method=$method path=$path query=$queryState cacheCandidate=$isCacheCandidate"
         )
+
+        // 【D】首次会话列表请求诊断：相对 page-loaded / Main 启动时间
+        maybeLogFirstSessionsProbe(method, path)
+    }
+
+    /**
+     * 诊断 sessions 约 12s 空窗：记录首次 GET /api/hermes/sessions 相对时间。
+     * 不打印 query 内容、不打印 token。
+     */
+    private fun maybeLogFirstSessionsProbe(method: String, path: String) {
+        if (firstSessionsProbeLogged) return
+        if (!method.equals("GET", ignoreCase = true)) return
+        val normalized = path.trim().lowercase()
+        if (normalized != "/api/hermes/sessions") return
+
+        firstSessionsProbeLogged = true
+        val now = System.currentTimeMillis()
+        val sinceStart = now - appStartTimeMs
+        val sincePage = if (pageCacheFirstLoadedAtMs > 0L) {
+            now - pageCacheFirstLoadedAtMs
+        } else {
+            -1L
+        }
+        Log.d(
+            TAG,
+            "[HermesTiming] first sessions probe sinceStartMs=$sinceStart sincePageLoadedMs=$sincePage"
+        )
     }
 
     private fun injectJs(js: String) {
@@ -1003,8 +1113,19 @@ class MainActivity : AppCompatActivity() {
         //              不属于 WebView localStorage/cache，退出登录时必须单独清理，避免敏感会话记录残留。
         clearCurrentUserApiCache()
 
-        // 跳转到服务器设置界面
+        // 清理持久化 JWT，避免退出后仍被快速复用
+        if (::authTokenStore.isInitialized) {
+            if (loginUsername.isNotBlank() && serverOrigin.isNotBlank()) {
+                authTokenStore.clear(serverOrigin, loginUsername)
+            } else if (serverOrigin.isNotBlank()) {
+                authTokenStore.clearForOrigin(serverOrigin)
+            }
+        }
+        authToken = null
+
+        // 跳转到服务器设置界面；禁止立刻快速自动登录再跳回
         val intent = Intent(this, ConfigActivity::class.java)
+        intent.putExtra(ConfigActivity.EXTRA_SKIP_FAST_AUTO_LOGIN, true)
         intent.flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
         startActivity(intent)
         finish()

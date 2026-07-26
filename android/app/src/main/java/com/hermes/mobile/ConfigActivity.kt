@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.CountDownTimer
+import android.util.Log
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
@@ -26,6 +27,8 @@ import com.hermes.mobile.config.ServerManager
  * 3. 自动登录进行中时，主按钮切换为「取消自动登录」
  * 4. 底部显示项目简述和 GitHub 超链接
  * 5. 小屏手机锁定竖屏
+ * 6. 有 active 服务器 + 开启自动登录时：使用极短等待（FAST_AUTO_LOGIN_MS）进入 Main，
+ *    减少约 2s 设置页停留；用户仍可点「取消自动登录」打断
  */
 class ConfigActivity : AppCompatActivity() {
 
@@ -45,11 +48,17 @@ class ConfigActivity : AppCompatActivity() {
     private lateinit var countdownPlusBtn: Button
     private lateinit var cancelCountdownBtn: Button
     private var countDownTimer: CountDownTimer? = null
-    private var countdownSeconds = 5 // 默认 5 秒
+    private var countdownSeconds = 5 // 默认 5 秒（用户自定义；快速路径用 FAST_AUTO_LOGIN_MS）
     private var isCountdownActive = false
 
     // 项目信息
     private lateinit var githubLinkBtn: TextView
+
+    /**
+     * 是否允许本轮使用「快速自动登录」路径。
+     * 用户主动点开设置页（从 Main 退出登录 / 取消倒计时）后关闭，避免无法停留在设置页。
+     */
+    private var allowFastAutoLogin = true
 
     companion object {
         private const val TAG = "HermesConfig"
@@ -61,6 +70,13 @@ class ConfigActivity : AppCompatActivity() {
         private const val MIN_COUNTDOWN_SECONDS = 2
         private const val MAX_COUNTDOWN_SECONDS = 15
         private const val DEFAULT_COUNTDOWN_SECONDS = 5
+        /**
+         * 冷启动且自动登录开启时，设置页仅短暂展示后进入 Main。
+         * 比完整倒计时（2~15s）快一个数量级，同时仍给用户一点「取消」窗口。
+         */
+        private const val FAST_AUTO_LOGIN_MS = 300L
+        /** Intent：从 Main 退出登录回到设置页时禁止立刻再跳回 */
+        const val EXTRA_SKIP_FAST_AUTO_LOGIN = "skip_fast_auto_login"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -69,6 +85,8 @@ class ConfigActivity : AppCompatActivity() {
         // 小屏手机锁定竖屏，避免横屏下设置页布局拥挤。
         ScreenOrientationHelper.lockPortraitOnPhone(this)
         setContentView(R.layout.activity_config)
+
+        allowFastAutoLogin = !intent.getBooleanExtra(EXTRA_SKIP_FAST_AUTO_LOGIN, false)
 
         serverManager = ServerManager(this)
 
@@ -100,6 +118,7 @@ class ConfigActivity : AppCompatActivity() {
 
         addServerBtn.setOnClickListener {
             cancelCountdown()
+            allowFastAutoLogin = false
             val intent = Intent(this, ServerEditActivity::class.java)
             startActivityForResult(intent, REQUEST_ADD_SERVER)
         }
@@ -108,6 +127,7 @@ class ConfigActivity : AppCompatActivity() {
         connectButton.setOnClickListener {
             if (isCountdownActive) {
                 cancelCountdown()
+                allowFastAutoLogin = false
                 Toast.makeText(this, "已取消自动登录", Toast.LENGTH_SHORT).show()
             } else {
                 connectToServer()
@@ -121,8 +141,11 @@ class ConfigActivity : AppCompatActivity() {
             updateAutoLoginSectionVisibility()
             if (!isChecked) {
                 cancelCountdown()
+                allowFastAutoLogin = false
             } else {
-                startCountdownIfNeeded()
+                // 用户手动打开开关：使用完整倒计时，便于调整秒数
+                allowFastAutoLogin = false
+                startCountdownIfNeeded(preferFast = false)
             }
             updateConnectButtonState()
         }
@@ -155,6 +178,7 @@ class ConfigActivity : AppCompatActivity() {
 
         cancelCountdownBtn.setOnClickListener {
             cancelCountdown()
+            allowFastAutoLogin = false
         }
 
         githubLinkBtn.setOnClickListener {
@@ -215,23 +239,39 @@ class ConfigActivity : AppCompatActivity() {
         countdownDurationText.text = countdownSeconds.toString()
     }
 
-    private fun startCountdownIfNeeded() {
+    private fun startCountdownIfNeeded(preferFast: Boolean = allowFastAutoLogin) {
         if (!autoLoginSwitch.isChecked) return
         val activeServer = serverManager.getActiveServer() ?: return
-        startCountdown(activeServer)
+        startCountdown(activeServer, preferFast = preferFast)
     }
 
-    private fun startCountdown(server: ServerEntry) {
+    /**
+     * @param preferFast true：冷启动快速路径（FAST_AUTO_LOGIN_MS）；false：用户配置的完整秒数
+     */
+    private fun startCountdown(server: ServerEntry, preferFast: Boolean) {
         cancelCountdown()
         isCountdownActive = true
         countdownText.visibility = View.VISIBLE
-        // 主按钮已承担“取消自动登录”，兼容旧按钮保持隐藏。
         cancelCountdownBtn.visibility = View.GONE
         updateConnectButtonState()
 
-        countDownTimer = object : CountDownTimer((countdownSeconds * 1000L), 1000L) {
+        val useFast = preferFast && allowFastAutoLogin
+        val totalMs = if (useFast) FAST_AUTO_LOGIN_MS else (countdownSeconds * 1000L)
+        val tickMs = if (useFast) FAST_AUTO_LOGIN_MS else 1000L
+
+        Log.d(
+            TAG,
+            "auto-login countdown start fast=$useFast totalMs=$totalMs server=${server.name}"
+        )
+
+        countDownTimer = object : CountDownTimer(totalMs, tickMs) {
             override fun onTick(millisUntilFinished: Long) {
-                val secondsRemaining = ((millisUntilFinished + 999L) / 1000L).toInt()
+                val secondsRemaining = if (useFast) {
+                    // 快速路径：显示 1s 级提示即可
+                    ((millisUntilFinished + 999L) / 1000L).toInt().coerceAtLeast(1)
+                } else {
+                    ((millisUntilFinished + 999L) / 1000L).toInt()
+                }
                 countdownText.text = "${secondsRemaining}s"
             }
 
@@ -257,7 +297,8 @@ class ConfigActivity : AppCompatActivity() {
     private fun restartCountdown() {
         val activeServer = serverManager.getActiveServer()
         if (activeServer != null && autoLoginSwitch.isChecked) {
-            startCountdown(activeServer)
+            // 调整秒数后走完整倒计时，便于用户确认新时长
+            startCountdown(activeServer, preferFast = false)
         }
     }
 
@@ -282,12 +323,14 @@ class ConfigActivity : AppCompatActivity() {
         serverManager.setActiveServerId(server.id)
         refreshList()
         if (autoLoginSwitch.isChecked) {
-            startCountdownIfNeeded()
+            // 切换服务器后用完整倒计时，避免误连
+            startCountdownIfNeeded(preferFast = false)
         }
     }
 
     private fun editServer(server: ServerEntry) {
         cancelCountdown()
+        allowFastAutoLogin = false
         val intent = Intent(this, ServerEditActivity::class.java)
         intent.putExtra("server_id", server.id)
         intent.putExtra("server_name", server.name)
@@ -312,7 +355,7 @@ class ConfigActivity : AppCompatActivity() {
 
         val hasSelected = selectedId != null && servers.any { it.id == selectedId }
         if (hasSelected) {
-            startCountdownIfNeeded()
+            startCountdownIfNeeded(preferFast = allowFastAutoLogin)
         }
     }
 
@@ -332,13 +375,13 @@ class ConfigActivity : AppCompatActivity() {
         if (isCountdownActive) {
             connectButton.isEnabled = true
             connectButton.text = "取消自动登录"
-            connectButton.setTextColor(ContextCompat.getColor(this, R.color.hermes_text_primary))
-            connectButton.setBackgroundResource(R.drawable.bg_btn_stop_autologin)
+            connectButton.setTextColor(ContextCompat.getColor(this, R.color.hermes_on_action))
+            connectButton.setBackgroundResource(R.drawable.bg_btn_stop_autologin_fab)
             return
         }
 
-        connectButton.setBackgroundResource(R.drawable.bg_btn_connect)
-        connectButton.setTextColor(ContextCompat.getColor(this, R.color.hermes_text_primary))
+        connectButton.setBackgroundResource(R.drawable.bg_btn_connect_fab)
+        connectButton.setTextColor(ContextCompat.getColor(this, R.color.hermes_on_action))
         if (hasSelected) {
             connectButton.isEnabled = true
             connectButton.text = "连接当前服务器"
