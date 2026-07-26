@@ -526,6 +526,72 @@ class MainActivity : AppCompatActivity() {
         }
         webView.loadUrl(serverUrl)
         scheduleWebUiProbe(force = false)
+        // 【方法2】主动预热启动门控缓存：让 profiles/config/sessions 在 SPA 请求前就开始拉取，
+        // 既缩短本次冷启动等待，又暖好下次冷启动缓存。
+        prewarmStartupCaches()
+    }
+
+    /**
+     * 【方法2】启动即后台预取「门控关键路径」，写入本地缓存。
+     *
+     * 【为什么】ChatView.onMounted 中 sessions 被 `await Promise.all([profiles, config])` 卡住，
+     * 而这两个接口服务端约 6.7s。提前在 Main 启动时并行拉取（而非等 SPA ~1.5s 才发），
+     * 可显著缩短「列表可见」时间；已有新鲜缓存则跳过，避免重复请求。
+     */
+    private fun prewarmStartupCaches() {
+        if (!ENABLE_API_RESPONSE_CACHE) return
+        if (!::apiCacheManager.isInitialized) return
+        if (serverOrigin.isBlank()) return
+        val userIdentity = currentUserIdentityOrNull() ?: return
+
+        val targets = listOf(
+            "/api/hermes/profiles" to null,
+            "/api/hermes/config" to null,
+            "/api/hermes/sessions" to null,
+            "/api/hermes/sessions" to "source=global_agent"
+        )
+        targets.forEach { (path, query) ->
+            val cacheKey = CacheKeyBuilder.build(serverOrigin, userIdentity, "GET", path, query)
+            val existing = apiCacheManager.read(cacheKey)
+            if (existing != null && existing.first.isFresh()) return@forEach
+            refreshApiCacheInBackground(
+                method = "GET",
+                path = path,
+                query = query,
+                cacheKey = cacheKey,
+                userIdentity = userIdentity,
+                requestHeaders = emptyMap(),
+                previousBody = existing?.second,
+                allowSoftRefresh = false
+            )
+        }
+        Log.d(TAG, "[HermesCache] prewarm startup caches scheduled")
+    }
+
+    /**
+     * 当前可识别的用户身份（用于缓存 key / 清理）；无法识别返回 null。
+     */
+    private fun currentUserIdentityOrNull(): String? {
+        return when {
+            loginUsername.isNotBlank() -> "user:$loginUsername"
+            !authToken.isNullOrBlank() -> "token:${authToken!!.take(32)}"
+            else -> null
+        }
+    }
+
+    /**
+     * 按 path 前缀精确清理当前 server+user 维度缓存；无法识别用户时退化为清理当前 server 全部缓存。
+     */
+    private fun clearCacheByPathPrefix(pathPrefix: String) {
+        if (!::apiCacheManager.isInitialized) return
+        val serverHash = CacheKeyBuilder.hashText(serverOrigin)
+        val userIdentity = currentUserIdentityOrNull()
+        if (userIdentity == null) {
+            apiCacheManager.clearForServer(serverHash)
+            return
+        }
+        val userHash = CacheKeyBuilder.hashText(userIdentity)
+        apiCacheManager.clearByPathPrefix(serverHash, userHash, pathPrefix)
     }
 
     /**
@@ -1151,6 +1217,21 @@ class MainActivity : AppCompatActivity() {
         if (CacheableApiMatcher.isConversationMutation(method, path)) {
             Log.d(TAG, "[HermesCache] invalidate by mutation method=$method path=$path")
             clearCurrentUserApiCache()
+            return
+        }
+
+        // 配置类写操作：精确清理 config 缓存，避免改设置后仍读旧值。
+        if (CacheableApiMatcher.isConfigMutation(method, path)) {
+            clearCacheByPathPrefix(CacheableApiMatcher.CONFIG_PATH_PREFIX)
+            Log.d(TAG, "[HermesCache] config mutation -> clear config cache method=$method path=$path")
+            return
+        }
+
+        // profile 写操作：清理 profiles 缓存；切换/改 profile 会改变会话列表，一并硬失效 sessions 缓存。
+        if (CacheableApiMatcher.isProfileMutation(method, path)) {
+            clearCacheByPathPrefix(CacheableApiMatcher.PROFILES_PATH_PREFIX)
+            clearCacheByPathPrefix("/api/hermes/sessions")
+            Log.d(TAG, "[HermesCache] profile mutation -> clear profiles+sessions cache method=$method path=$path")
             return
         }
 

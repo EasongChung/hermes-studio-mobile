@@ -179,55 +179,61 @@
                 android:textSize="12sp"
                 android:textColor="@color/hermes_text_secondary" />
 
-            <!-- 一体式药丸：−  数字  + -->
+            <!-- 一体式药丸：−│ 数字 │+  （加分隔线 + 强调色符号，提升可辨识度） -->
             <LinearLayout
                 android:layout_width="wrap_content"
-                android:layout_height="44dp"
+                android:layout_height="46dp"
                 android:orientation="horizontal"
                 android:gravity="center_vertical"
-                android:background="@drawable/bg_stepper_pill"
-                android:paddingStart="2dp"
-                android:paddingEnd="2dp">
+                android:background="@drawable/bg_stepper_pill">
 
-                <Button
+                <TextView
                     android:id="@+id/countdownMinusBtn"
-                    android:layout_width="44dp"
-                    android:layout_height="40dp"
-                    android:minWidth="0dp"
-                    android:minHeight="0dp"
+                    android:layout_width="48dp"
+                    android:layout_height="match_parent"
                     android:text="−"
-                    android:textSize="22sp"
+                    android:textSize="24sp"
                     android:textStyle="bold"
                     android:gravity="center"
                     android:includeFontPadding="false"
-                    style="@style/Widget.AppCompat.Button.Borderless"
-                    android:textColor="@color/hermes_text_primary"
-                    android:background="@drawable/bg_stepper_btn" />
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:textColor="@color/hermes_accent_soft"
+                    android:background="@drawable/bg_stepper_btn_start" />
+
+                <View
+                    android:layout_width="1dp"
+                    android:layout_height="26dp"
+                    android:background="@color/hermes_border" />
 
                 <TextView
                     android:id="@+id/countdownDurationText"
-                    android:layout_width="48dp"
+                    android:layout_width="54dp"
                     android:layout_height="match_parent"
                     android:gravity="center"
                     android:text="5"
-                    android:textSize="18sp"
+                    android:textSize="19sp"
                     android:textColor="@color/hermes_text_primary"
                     android:textStyle="bold" />
 
-                <Button
+                <View
+                    android:layout_width="1dp"
+                    android:layout_height="26dp"
+                    android:background="@color/hermes_border" />
+
+                <TextView
                     android:id="@+id/countdownPlusBtn"
-                    android:layout_width="44dp"
-                    android:layout_height="40dp"
-                    android:minWidth="0dp"
-                    android:minHeight="0dp"
+                    android:layout_width="48dp"
+                    android:layout_height="match_parent"
                     android:text="+"
-                    android:textSize="22sp"
+                    android:textSize="24sp"
                     android:textStyle="bold"
                     android:gravity="center"
                     android:includeFontPadding="false"
-                    style="@style/Widget.AppCompat.Button.Borderless"
-                    android:textColor="@color/hermes_text_primary"
-                    android:background="@drawable/bg_stepper_btn" />
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:textColor="@color/hermes_accent_soft"
+                    android:background="@drawable/bg_stepper_btn_end" />
             </LinearLayout>
         </LinearLayout>
 
@@ -240,33 +246,25 @@
             android:visibility="gone" />
     </LinearLayout>
 
-    <!-- 连接 / 取消自动登录：悬浮按钮风格（居中、圆角、elevation） -->
-    <FrameLayout
+    <!-- 连接 / 取消自动登录：悬浮按钮风格。
+         与上方倒计时悬浮岛等宽（同 16dp 左右外边距），并与底部信息栏留足间距，避免重叠。 -->
+    <Button
+        android:id="@+id/connectButton"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp"
-        android:paddingTop="4dp"
-        android:paddingBottom="4dp">
-
-        <Button
-            android:id="@+id/connectButton"
-            android:layout_width="wrap_content"
-            android:layout_height="56dp"
-            android:layout_gravity="center_horizontal"
-            android:minWidth="240dp"
-            android:paddingStart="28dp"
-            android:paddingEnd="28dp"
-            android:text="连接当前服务器"
-            android:textSize="16sp"
-            android:textStyle="bold"
-            android:textAllCaps="false"
-            android:textColor="@color/hermes_on_action"
-            android:background="@drawable/bg_btn_connect_fab"
-            android:elevation="8dp"
-            android:stateListAnimator="@null"
-            android:enabled="false" />
-    </FrameLayout>
+        android:layout_height="56dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginTop="10dp"
+        android:layout_marginBottom="14dp"
+        android:text="连接当前服务器"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:textAllCaps="false"
+        android:textColor="@color/hermes_on_action"
+        android:background="@drawable/bg_btn_connect_fab"
+        android:elevation="8dp"
+        android:stateListAnimator="@null"
+        android:enabled="false" />
 
     <!-- ===== 项目信息区 ===== -->
     <LinearLayout

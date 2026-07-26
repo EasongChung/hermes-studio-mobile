@@ -44,8 +44,9 @@ class ConfigActivity : AppCompatActivity() {
     private lateinit var countdownSettingsRow: LinearLayout
     private lateinit var countdownText: TextView
     private lateinit var countdownDurationText: TextView
-    private lateinit var countdownMinusBtn: Button
-    private lateinit var countdownPlusBtn: Button
+    // 步进器 − / + 改为 TextView（一体式药丸内的分段），事件逻辑不变
+    private lateinit var countdownMinusBtn: TextView
+    private lateinit var countdownPlusBtn: TextView
     private lateinit var cancelCountdownBtn: Button
     private var countDownTimer: CountDownTimer? = null
     private var countdownSeconds = 5 // 默认 5 秒（用户自定义；快速路径用 FAST_AUTO_LOGIN_MS）
@@ -84,11 +85,24 @@ class ConfigActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         // 小屏手机锁定竖屏，避免横屏下设置页布局拥挤。
         ScreenOrientationHelper.lockPortraitOnPhone(this)
-        setContentView(R.layout.activity_config)
-
-        allowFastAutoLogin = !intent.getBooleanExtra(EXTRA_SKIP_FAST_AUTO_LOGIN, false)
 
         serverManager = ServerManager(this)
+        val skipFast = intent.getBooleanExtra(EXTRA_SKIP_FAST_AUTO_LOGIN, false)
+        allowFastAutoLogin = !skipFast
+
+        // 【方法3】冷启动直达：开启自动登录且有选中服务器、且非「退出登录返回」，
+        // 则完全跳过设置页渲染，直接进入 Main，省去 Config 首帧 + 倒计时等待。
+        // 用户如需修改配置，可在 Main 内退出登录（带 skip 标记）返回设置页。
+        if (!skipFast && shouldDirectAutoLogin()) {
+            val server = serverManager.getActiveServer()
+            if (server != null) {
+                Log.d(TAG, "direct auto-login skip Config -> Main server=${server.name}")
+                autoConnectToServer(server)
+                return
+            }
+        }
+
+        setContentView(R.layout.activity_config)
 
         serverList = findViewById(R.id.serverList)
         emptyHint = findViewById(R.id.emptyHint)
@@ -194,6 +208,16 @@ class ConfigActivity : AppCompatActivity() {
         }
 
         refreshList()
+    }
+
+    /**
+     * 【方法3】是否满足冷启动直达 Main 的条件：开启自动登录 + 存在选中服务器。
+     */
+    private fun shouldDirectAutoLogin(): Boolean {
+        val prefs = getSharedPreferences(PREFS_AUTO_LOGIN, MODE_PRIVATE)
+        val enabled = prefs.getBoolean(KEY_AUTO_LOGIN_ENABLED, false)
+        if (!enabled) return false
+        return serverManager.getActiveServer() != null
     }
 
     private fun loadAutoLoginSettings() {

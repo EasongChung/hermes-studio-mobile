@@ -129,6 +129,33 @@ class ApiCacheManager(
     }
 
     /**
+     * 清理指定 server + user 维度下、pathAndQuery 以某前缀开头的缓存条目。
+     *
+     * 【为什么需要】config / profiles 等配置类缓存在其写操作后应精确失效，
+     * 但不应波及 sessions 等其它缓存。按 path 前缀清理可做到最小影响面。
+     */
+    fun clearByPathPrefix(serverHash: String, userHash: String, pathPrefix: String) {
+        try {
+            ensureDirs()
+            entriesDir.listFiles()?.forEach { entryFile ->
+                val entry = runCatching {
+                    ApiCacheEntry.fromJson(JSONObject(entryFile.readText(Charsets.UTF_8)))
+                }.getOrNull() ?: return@forEach
+
+                if (entry.serverHash == serverHash &&
+                    entry.userHash == userHash &&
+                    entry.pathAndQuery.startsWith(pathPrefix)
+                ) {
+                    File(bodiesDir, entry.bodyFile).delete()
+                    entryFile.delete()
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Clear by path prefix failed: ${e.message}")
+        }
+    }
+
+    /**
      * 清理指定 server 维度的全部缓存。
      *
      * 【为什么需要】手动登录场景下，Android 可能无法在退出时还原具体 userIdentity。

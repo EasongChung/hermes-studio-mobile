@@ -36,9 +36,24 @@ object CacheableApiMatcher {
     private const val SESSION_LIST_PATH = "/api/hermes/sessions"
     private const val CONVERSATION_SUMMARY_PATH = "/api/hermes/sessions/conversations"
 
+    /**
+     * 【启动门控加速】ChatView.onMounted 中 `await Promise.all([fetchProfiles, fetchSettings])`
+     * 会把 GET /api/hermes/sessions 卡在 profiles+config 之后。实测这两个接口服务端约 6.7s，
+     * 直接导致会话列表晚约 7s 才请求。将这两个「配置类」精确 GET 纳入缓存，命中后立即返回、后台刷新，
+     * 从而解除门控。仅精确匹配，不含子路径（profiles/:name、config/credentials 等敏感/动态接口不缓存）。
+     */
+    private const val PROFILES_PATH = "/api/hermes/profiles"
+    private const val CONFIG_PATH = "/api/hermes/config"
+
+    /** 供缓存失效使用的前缀（写操作发生时清理对应缓存条目）。 */
+    const val CONFIG_PATH_PREFIX = "/api/hermes/config"
+    const val PROFILES_PATH_PREFIX = "/api/hermes/profiles"
+
     private val cacheableGetPaths = setOf(
         SESSION_LIST_PATH,
-        CONVERSATION_SUMMARY_PATH
+        CONVERSATION_SUMMARY_PATH,
+        PROFILES_PATH,
+        CONFIG_PATH
     )
 
     /**
@@ -140,6 +155,26 @@ object CacheableApiMatcher {
         return mutationRules.any { rule ->
             rule.method == normalizedMethod && rule.pathRegex.matches(normalizedPath)
         }
+    }
+
+    /**
+     * 判断是否为 config 写操作（PUT/POST/PATCH/DELETE 到 /api/hermes/config 前缀）。
+     * 命中后应清理 config 相关缓存，避免用户改设置后仍读到旧值。
+     */
+    fun isConfigMutation(method: String, path: String): Boolean {
+        val m = method.trim().uppercase(Locale.ROOT)
+        if (m !in setOf("POST", "PUT", "PATCH", "DELETE")) return false
+        return normalizePath(path).startsWith(CONFIG_PATH_PREFIX)
+    }
+
+    /**
+     * 判断是否为 profiles 写操作（创建/删除/重命名/切换 active/头像等）。
+     * 命中后应清理 profiles 缓存；切换 profile 还会改变会话列表，调用方需一并失效 sessions 缓存。
+     */
+    fun isProfileMutation(method: String, path: String): Boolean {
+        val m = method.trim().uppercase(Locale.ROOT)
+        if (m !in setOf("POST", "PUT", "PATCH", "DELETE")) return false
+        return normalizePath(path).startsWith(PROFILES_PATH_PREFIX)
     }
 
     /**
