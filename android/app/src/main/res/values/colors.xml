@@ -6,9 +6,9 @@
     <color name="hermes_page_bg_start">#F8FAFC</color>
     <color name="hermes_page_bg_center">#FFFFFF</color>
     <color name="hermes_page_bg_end">#EEF2F7</color>
-    <color name="hermes_accent">#6366F1</color>
-    <color name="hermes_accent_soft">#4F46E5</color>
-    <color name="hermes_accent_pressed">#4338CA</color>
+    <color name="hermes_accent">#4F46E5</color>
+    <color name="hermes_accent_soft">#4338CA</color>
+    <color name="hermes_accent_pressed">#3730A3</color>
     <color name="hermes_accent_tint">#EEF2FF</color>
     <color name="hermes_surface">#FFFFFF</color>
     <color name="hermes_surface_elevated">#F1F5F9</color>
