@@ -310,11 +310,14 @@ class ConfigActivity : AppCompatActivity() {
     }
 
     private fun cancelCountdown() {
+        if (!::countdownText.isInitialized) return
         countDownTimer?.cancel()
         countDownTimer = null
         isCountdownActive = false
         countdownText.visibility = View.GONE
-        cancelCountdownBtn.visibility = View.GONE
+        if (::cancelCountdownBtn.isInitialized) {
+            cancelCountdownBtn.visibility = View.GONE
+        }
         updateConnectButtonState()
     }
 
@@ -392,6 +395,7 @@ class ConfigActivity : AppCompatActivity() {
      * - 空闲且无选中服务器：按钮为「请先选择服务器」并禁用
      */
     private fun updateConnectButtonState() {
+        if (!::connectButton.isInitialized) return
         val servers = if (::serverManager.isInitialized) serverManager.getAllServers() else emptyList()
         val selectedId = if (::serverManager.isInitialized) serverManager.getActiveServerId() else null
         val hasSelected = selectedId != null && servers.any { it.id == selectedId }
@@ -428,7 +432,11 @@ class ConfigActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        cancelCountdown()
+        // 【安全】direct auto-login 跳过 setContentView，lateinit 属性未初始化。
+        // 需用 isInitialized 守卫，避免 countdownText 等未初始化就访问。
+        if (::countdownText.isInitialized) {
+            cancelCountdown()
+        }
         super.onDestroy()
     }
 }
