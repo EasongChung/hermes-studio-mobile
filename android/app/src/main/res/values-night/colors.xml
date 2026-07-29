@@ -5,7 +5,7 @@
         对比度改善（r49b）：提升所有强调色/按钮色的亮度，确保暗色背景上 WCAG AA ≥4.5:1。
         - hermes_accent（对话框按钮文本、二级主题色）: #818CF8→#A5B4FC（~4.6:1 → ~5.5:1 对 surface）
         - hermes_accent_soft（步进器 ±、添加按钮、选中指示器文本）: #A5B4FC→#C7D2FE（更亮、更明显）
-        - hermes_connect（连接按钮背景）: #6366F1→#818CF8（暗紫→亮紫，白字更清晰）
+        - hermes_connect（连接按钮背景）: 保持 #6366F1 以维持白字 ~4.5:1 AA 对比度
         - hermes_danger / success / warning 等语义色对照度已足够，微调边值更清晰
     -->
     <color name="hermes_primary">#0F1115</color>
@@ -27,8 +27,8 @@
     <color name="hermes_on_action">#FFFFFF</color>
     <color name="hermes_success">#4ADE80</color>
     <color name="hermes_warning">#FBBF24</color>
-    <color name="hermes_connect">#818CF8</color>
-    <color name="hermes_connect_pressed">#6366F1</color>
+    <color name="hermes_connect">#6366F1</color>
+    <color name="hermes_connect_pressed">#4F46E5</color>
     <color name="hermes_disabled_surface">#64748B</color>
     <color name="hermes_danger">#FB7185</color>
     <color name="hermes_danger_pressed">#E11D48</color>
