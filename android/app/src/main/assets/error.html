@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>连接失败 - Hermes Studio Mobile</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans SC", sans-serif;
+    background: #1A1A2E;
+    color: #F8FAFC;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 32px 24px;
+    text-align: center;
+  }
+  .icon {
+    font-size: 64px;
+    line-height: 1;
+    margin-bottom: 16px;
+  }
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: #F8FAFC;
+  }
+  .subtitle {
+    font-size: 14px;
+    color: #94A3B8;
+    margin-bottom: 24px;
+    line-height: 1.5;
+  }
+  .detail-box {
+    background: #1E293B;
+    border-radius: 12px;
+    padding: 16px 20px;
+    width: 100%;
+    max-width: 360px;
+    margin-bottom: 28px;
+    text-align: left;
+  }
+  .detail-label {
+    font-size: 11px;
+    color: #64748B;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+  .detail-value {
+    font-size: 13px;
+    color: #CBD5E1;
+    word-break: break-all;
+    line-height: 1.4;
+  }
+  .detail-code {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid #334155;
+  }
+  .btn-retry {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    max-width: 360px;
+    padding: 14px 24px;
+    background: #4F46E5;
+    color: #F8FAFC;
+    border: none;
+    border-radius: 12px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+    margin-bottom: 12px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn-retry:active {
+    background: #4338CA;
+    transform: scale(0.98);
+  }
+  .btn-retry .spinner {
+    display: none;
+    width: 18px;
+    height: 18px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: #F8FAFC;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  .btn-retry.loading .spinner { display: inline-block; }
+  .btn-retry.loading .label-text { display: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .btn-settings {
+    background: none;
+    border: none;
+    color: #64748B;
+    font-size: 14px;
+    cursor: pointer;
+    padding: 8px 16px;
+    text-decoration: underline;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn-settings:active { color: #94A3B8; }
+  .footer {
+    position: fixed;
+    bottom: 24px;
+    font-size: 11px;
+    color: #475569;
+  }
+</style>
+</head>
+<body>
+  <div class="icon">&#x26A0;&#xFE0F;</div>
+  <h1>连接失败</h1>
+  <p class="subtitle">无法连接到 Hermes Studio 服务器<br>请检查服务器状态和网络连接</p>
+
+  <div class="detail-box">
+    <div class="detail-label">服务器地址</div>
+    <div class="detail-value" id="serverUrl">--</div>
+    <div class="detail-code detail-value" id="errorDetail">--</div>
+  </div>
+
+  <button class="btn-retry" id="retryBtn" onclick="onRetry()">
+    <span class="spinner"></span>
+    <span class="label-text">&#x21BB; 重新连接</span>
+  </button>
+  <button class="btn-settings" onclick="onBackToSettings()">&#x2190; 返回设置</button>
+
+  <div class="footer">Hermes Studio Mobile</div>
+
+  <script>
+    // 从查询参数中读取 retryUrl 和 errorCode
+    var params = new URLSearchParams(window.location.search);
+    var retryUrl = params.get('retryUrl') || '';
+    var errorCode = params.get('errorCode') || '';
+
+    var serverUrlEl = document.getElementById('serverUrl');
+    var errorDetailEl = document.getElementById('errorDetail');
+
+    if (retryUrl) {
+      try {
+        serverUrlEl.textContent = decodeURIComponent(retryUrl);
+      } catch(e) {
+        serverUrlEl.textContent = retryUrl;
+      }
+    }
+
+    var errorMsgs = {
+      '-1': '未知错误',
+      '-2': '服务器地址解析失败（DNS 查找失败）',
+      '-3': '连接超时，服务器未响应',
+      '-4': '连接被拒绝',
+      '-5': 'TLS/SSL 握手失败',
+      '-6': '服务器地址格式错误',
+      '-7': '连接超时',
+      '-8': '重定向次数过多',
+      '-9': '资源加载被取消',
+      '-10': '不支持的协议',
+      '-11': '请求被拒绝（无效请求）',
+      '-12': '主机查找失败',
+      '-13': '连接中断',
+      '-14': '代理认证失败',
+      '-15': '重定向到无效地址',
+      '-16': '数据解析错误',
+      '-17': '请求超时',
+      '-18': '网络已断开',
+      '-19': '网络不可达',
+      '-20': '文件未找到',
+      '-21': '文件访问被拒绝',
+      '-22': '文件太大',
+      '-23': '文件格式错误',
+      '-24': '文件操作超时'
+    };
+    var errorText = errorMsgs[errorCode] || '未知错误（代码 ' + errorCode + '）';
+    errorDetailEl.textContent = '错误详情：' + errorText;
+
+    function onRetry() {
+      if (!retryUrl) return;
+      var btn = document.getElementById('retryBtn');
+      btn.classList.add('loading');
+      btn.disabled = true;
+      // 短暂延迟后重试，让用户看到加载动画
+      setTimeout(function() {
+        window.location.href = retryUrl;
+      }, 400);
+    }
+
+    function onBackToSettings() {
+      window.location.href = 'hermes-action://back-to-settings';
+    }
+
+    // 自动重试：页面可见时尝试自动重连（仅限网络恢复场景）
+    document.addEventListener('visibilitychange', function() {
+      if (!document.hidden && retryUrl) {
+        console.log('[HermesError] page visible, auto-retry...');
+        window.location.href = retryUrl;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -7,11 +7,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.webkit.DownloadListener
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -20,6 +22,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
+import android.view.ViewGroup
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -404,6 +407,14 @@ class MainActivity : AppCompatActivity() {
                 view: WebView?,
                 request: WebResourceRequest?
             ): Boolean {
+                val url = request?.url?.toString() ?: return false
+                // 拦截错误页面的「返回设置」按钮事件，跳转到 ConfigActivity
+                if (url.startsWith("hermes-action://")) {
+                    if (url.contains("back-to-settings")) {
+                        performLogout()
+                    }
+                    return true
+                }
                 return false
             }
 
@@ -414,7 +425,15 @@ class MainActivity : AppCompatActivity() {
             ) {
                 super.onReceivedError(view, request, error)
                 if (request?.isForMainFrame != true) return
-                maybeRollbackWebUiAndReload("main-frame-error code=${error?.errorCode}")
+                // 加载品牌化离线错误页面，替代空白页或无限重试
+                // 用户可点击「重新连接」重试，或「返回设置」修改服务器配置
+                val errorCode = error?.errorCode ?: -1
+                val retryUrl = Uri.encode(serverUrl)
+                val errorPage = "file:///android_asset/error.html?retryUrl=$retryUrl&errorCode=$errorCode"
+                Log.w(TAG, "main-frame error code=$errorCode, loading error page")
+                view?.loadUrl(errorPage)
+                // 仍尝试 WebUI rollback 以备下次重试时使用
+                maybeRollbackWebUiAndReload("main-frame-error code=$errorCode")
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -513,6 +532,17 @@ class MainActivity : AppCompatActivity() {
             }
         }
         WebView.setWebContentsDebuggingEnabled(true)
+
+        // ===== 文件下载监听器 =====
+        // 【为什么需要】WebView 默认点击下载链接时，用户无视觉反馈。
+        // 通过 DownloadManager 将下载任务交由系统处理，通知栏显示进度和完成提醒。
+        // 不修改前端代码，纯 Android 原生层实现。
+        webView.setDownloadListener(DownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+            Log.d(TAG, "Download requested: $url")
+            DownloadManagerHelper.enqueueDownload(
+                this@MainActivity, url, userAgent, contentDisposition, mimeType
+            )
+        })
     }
 
     private fun loadFrontend() {
@@ -1312,7 +1342,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        if (::webView.isInitialized) webView.destroy()
+        if (::webView.isInitialized) {
+            // 【内存泄漏防护】WebView 必须在从父容器移除后再 destroy，
+            // 否则 Activity 销毁后 WebView 仍持有 Activity 引用，导致内存泄漏。
+            // 参考 Android 官方建议：先 removeView，再 destroy。
+            val parent = webView.parent
+            if (parent is ViewGroup) {
+                parent.removeView(webView)
+            }
+            webView.destroy()
+        }
         super.onDestroy()
     }
 }
