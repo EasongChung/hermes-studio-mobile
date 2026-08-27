@@ -23,7 +23,7 @@ let service: MemoryService
 
 beforeEach(async () => {
   webUiHome = await mkdtemp(join(tmpdir(), 'ekko-memory-service-'))
-  store = new SqliteMemoryStore(new EkkoDatabaseManager({ webUiHome }))
+  store = new SqliteMemoryStore(new EkkoDatabaseManager({ baseDirectory: webUiHome }))
   service = new MemoryService({ store, reviewEveryUserMessages: 1 })
 })
 
@@ -33,6 +33,149 @@ afterEach(async () => {
 })
 
 describe('MemoryService', () => {
+  it('exposes standalone CRUD, history, and audit methods', async () => {
+    const identity = { sessionId: 'memory-api', profileId: 'default' }
+    const messageIds = await service.captureMessages(identity, [
+      { role: 'user', content: 'I prefer a dark interface.' },
+      { role: 'assistant', content: 'I will remember that.' },
+    ])
+
+    const created = await service.create({
+      kind: 'general_preference',
+      itemKey: 'interface_theme',
+      reason: 'Explicit user preference.',
+      explicitUserIntent: true,
+      identity,
+      node: {
+        valueJson: 'dark',
+        title: 'Interface theme',
+        content: 'The user prefers a dark interface.',
+        sourceMessageIds: [messageIds[0]],
+      },
+    })
+    expect(created).toMatchObject({ accepted: true, action: 'created' })
+
+    const active = await service.list({ profileId: 'default' })
+    expect(active).toMatchObject([{ id: created.nodeId, status: 'active', revision: 1 }])
+    await expect(service.get(created.nodeId!, identity)).resolves.toMatchObject({ valueJson: 'dark' })
+
+    const updated = await service.update(created.nodeId!, {
+      reason: 'The user changed the preference.',
+      expectedRevision: created.node!.revision,
+      explicitUserIntent: true,
+      identity,
+      node: {
+        valueJson: 'light',
+        content: 'The user prefers a light interface.',
+      },
+    })
+    expect(updated).toMatchObject({ accepted: true, action: 'updated', node: { revision: 2, valueJson: 'light' } })
+    await expect(service.list({
+      profileId: 'default',
+      statuses: ['superseded'],
+    })).resolves.toMatchObject([{ id: created.nodeId, status: 'superseded' }])
+
+    const messages = await service.listMessages({ sessionId: identity.sessionId, limit: 10 })
+    expect(messages.map(message => message.id)).toEqual(messageIds)
+    const updatedAt = new Date().toISOString()
+    await store.appendSummary({
+      id: 'memory-api-summary',
+      sessionId: identity.sessionId,
+      fromMessageId: messageIds[0],
+      toMessageId: messageIds[1],
+      summary: 'The user selected an interface theme.',
+      constraints: [],
+      preferences: ['Interface theme'],
+      decisions: [],
+      completedWork: [],
+      pendingWork: [],
+      knownIssues: [],
+      createdAt: updatedAt,
+    })
+    await store.setSessionState({
+      sessionId: identity.sessionId,
+      lastExtractedMessageId: messageIds[1],
+      lastSummaryMessageId: messageIds[1],
+      updatedAt,
+    })
+    await expect(service.getLatestSummary(identity.sessionId)).resolves.toMatchObject({ id: 'memory-api-summary' })
+    await expect(service.getSessionState(identity.sessionId)).resolves.toMatchObject({
+      lastExtractedMessageId: messageIds[1],
+      lastSummaryMessageId: messageIds[1],
+    })
+
+    const removed = await service.delete(updated.nodeId!, {
+      reason: 'The user asked Ekko to forget this preference.',
+      expectedRevision: updated.node!.revision,
+      identity,
+    })
+    expect(removed).toMatchObject({ mode: 'soft', deletedIds: [updated.nodeId] })
+    await expect(service.list({
+      profileId: 'default',
+      statuses: ['deleted'],
+    })).resolves.toMatchObject([{ id: updated.nodeId, status: 'deleted', revision: 3 }])
+
+    const audits = await service.listAuditEvents({
+      profileId: 'default',
+      sessionId: identity.sessionId,
+    })
+    expect(audits.map(event => event.eventType)).toEqual(['delete', 'supersede', 'create'])
+    expect(audits.every(event => event.profileId === 'default')).toBe(true)
+  })
+
+  it('requires confirmation for the exported hard-delete method', async () => {
+    const identity = { sessionId: 'memory-hard-delete', profileId: 'default' }
+    const created = await service.create({
+      kind: 'general_preference',
+      itemKey: 'temporary_note',
+      reason: 'Store a temporary fact.',
+      explicitUserIntent: true,
+      identity,
+      node: {
+        valueJson: 'temporary',
+        title: 'Temporary note',
+        content: 'A temporary note.',
+      },
+    })
+    expect(created).toMatchObject({ accepted: true, action: 'created' })
+
+    const unconfirmed = await service.delete(created.nodeId!, {
+      mode: 'hard',
+      reason: 'Remove the temporary fact.',
+      expectedRevision: created.node!.revision,
+      identity,
+    })
+    expect(unconfirmed).toEqual({
+      deletedIds: [],
+      mode: 'hard',
+      requiresConfirmation: true,
+      reason: 'Hard delete requires confirmation.',
+    })
+    await expect(service.delete(created.nodeId!, {
+      mode: 'hard',
+      confirmed: true,
+      reason: 'Remove the temporary fact.',
+      expectedRevision: created.node!.revision,
+      identity,
+    })).resolves.toMatchObject({ mode: 'hard', deletedIds: [created.nodeId] })
+    await expect(service.get(created.nodeId!, identity)).resolves.toBeUndefined()
+  })
+
+
+  it('keeps the latest 20 messages in automatic memory context by default', async () => {
+    const identity = { sessionId: 's1', profileId: 'default' }
+    await service.captureMessages(identity, Array.from({ length: 25 }, (_, index) => ({
+      role: 'user' as const,
+      content: `message-${index + 1}`,
+    })))
+
+    const context = await service.retrieve(identity)
+
+    expect(context.recentMessages).toHaveLength(20)
+    expect(context.recentMessages[0]?.content).toBe('message-6')
+    expect(context.recentMessages.at(-1)?.content).toBe('message-25')
+  })
+
   it('generates canonical keys on the server and stores one profile memory shape', async () => {
     const accepted = await service.proposeUpdate({
       operation: 'create',
@@ -55,6 +198,53 @@ describe('MemoryService', () => {
     expect(exact.exact).toMatchObject([{ profileId: 'work', valueJson: 'tofu' }])
   })
 
+  it('searches controlled memory kinds without relying on natural-language matching', async () => {
+    const identity = { sessionId: 's1', profileId: 'default' }
+    await service.proposeUpdate({
+      operation: 'create',
+      kind: 'general_preference',
+      itemKey: 'visual_theme',
+      reason: '用户陈述稳定偏好。',
+      identity,
+      node: {
+        valueJson: '深色界面',
+        title: '界面主题偏好',
+        content: '用户偏好使用深色界面。',
+      },
+    })
+    await service.proposeUpdate({
+      operation: 'create',
+      kind: 'habit_routine',
+      itemKey: 'weekly_review',
+      reason: '用户陈述固定习惯。',
+      identity,
+      node: {
+        valueJson: '每周复盘',
+        title: '复盘习惯',
+        content: '用户保持每周复盘的习惯。',
+      },
+    })
+    await service.proposeUpdate({
+      operation: 'create',
+      kind: 'home_location',
+      reason: '用户陈述常住地。',
+      identity,
+      node: { valueJson: '测试城市' },
+    })
+
+    const tool = createMemoryTools(service).find(item => item.definition.name === 'memory_search')!
+    const result = await tool.execute({
+      kinds: ['general_preference', 'habit_routine'],
+      limit: 10,
+    }, identity)
+
+    expect(result.ok).toBe(true)
+    expect((result.data as { exact: MemoryNode[] }).exact.map(node => node.key).sort()).toEqual([
+      'preference.general:visual_theme',
+      'profile.habit:weekly_review',
+    ])
+  })
+
   it('prefers corrections when resolving unified-memory conflicts', () => {
     const nodes = [
       memoryNode('older'),
@@ -67,6 +257,105 @@ describe('MemoryService', () => {
       { nodeId: 'older', reason: 'conflict_lost' },
       { nodeId: 'newer', reason: 'conflict_lost' },
     ]))
+  })
+
+  it('uses a 4000-token budget instead of a fixed automatic card count', async () => {
+    for (let index = 0; index < 60; index += 1) {
+      await store.upsertNode(memoryNode(`budget-${index}`, {
+        type: 'constraint',
+        key: `constraint.hard:budget_${index}`,
+        title: `Budget preference ${index}`,
+        content: `Preference ${index}: ${'compact detail '.repeat(80)}`,
+        updatedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+      }))
+    }
+
+    const context = await service.retrieve(
+      { sessionId: 's1', profileId: 'default' },
+      'unrelated current request',
+    )
+
+    expect(context.relevantNodes.length).toBeGreaterThan(12)
+    expect(context.relevantNodes.length).toBeLessThan(60)
+    expect(context.diagnostics).toMatchObject({
+      tokenBudget: 4000,
+      retrievedNodeCount: context.relevantNodes.length,
+    })
+    expect(context.diagnostics.usedTokens).toBeLessThanOrEqual(4000)
+    expect(context.diagnostics.omittedNodeCount).toBe(60 - context.relevantNodes.length)
+  })
+
+  it('finds relevant old facts outside the former importance-based candidate window', async () => {
+    await store.upsertNode(memoryNode('needle', {
+      type: 'fact',
+      key: 'custom.fact:needle',
+      title: 'Archived deployment codename',
+      content: 'The archived deployment codename is needle-orchid.',
+      importance: 0.01,
+      confidence: 0.4,
+      updatedAt: '2020-01-01T00:00:00.000Z',
+    }))
+    for (let index = 0; index < 180; index += 1) {
+      await store.upsertNode(memoryNode(`noise-${index}`, {
+        type: 'fact',
+        key: `custom.fact:noise_${index}`,
+        title: `Recent unrelated fact ${index}`,
+        content: `Recent unrelated content ${index}`,
+        importance: 1,
+        confidence: 1,
+        updatedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+      }))
+    }
+
+    const context = await service.retrieve(
+      { sessionId: 's1', profileId: 'default' },
+      'needle-orchid',
+    )
+
+    expect(context.relevantNodes.map(node => node.id)).toContain('needle')
+  })
+
+  it('recalls ordinary preferences only when they match the current request', async () => {
+    await service.proposeUpdate({
+      operation: 'create',
+      kind: 'general_preference',
+      itemKey: 'interface_theme',
+      reason: 'explicit',
+      explicitUserIntent: true,
+      identity: { sessionId: 's1', profileId: 'default' },
+      node: {
+        valueJson: 'dark interface',
+        title: 'Interface theme',
+        content: 'The user prefers a dark interface.',
+      },
+    })
+
+    const unrelated = await service.retrieve(
+      { sessionId: 's1', profileId: 'default' },
+      'Plan a weekend trip',
+    )
+    const related = await service.retrieve(
+      { sessionId: 's1', profileId: 'default' },
+      'Configure the dark interface',
+    )
+
+    expect(unrelated.relevantNodes).toHaveLength(0)
+    expect(related.relevantNodes.map(node => node.key)).toContain('preference.general:interface_theme')
+  })
+
+  it('defaults and clamps direct memory searches to 50 results at runtime', async () => {
+    for (let index = 0; index < 60; index += 1) {
+      await store.upsertNode(memoryNode(`search-${index}`, {
+        key: `preference.general:search_${index}`,
+      }))
+    }
+
+    const identity = { sessionId: 's1', profileId: 'default' }
+    const defaultResult = await service.search(identity, {})
+    const result = await service.search(identity, { limit: 999 })
+
+    expect([...defaultResult.exact, ...defaultResult.relevant]).toHaveLength(50)
+    expect([...result.exact, ...result.relevant]).toHaveLength(50)
   })
 
   it('keeps independent multi-value preferences and isolates profiles', async () => {
@@ -248,7 +537,8 @@ describe('MemoryService', () => {
     })
 
     const request = vi.mocked(client.create).mock.calls[0][0] as ModelRequest
-    expect(request.messages[0].content).toContain('Retrieved Memory')
+    expect(request.messages[0].content).toContain('## Memory Usage Rules')
+    expect(request.messages[0].content).toContain('about to answer that you do not know or remember')
     expect(request.messages[0].content).toContain('Avoid 香菜')
     expect(request.messages[0].content).toContain('key=preference.food.avoid:香菜 revision=1')
     expect(request.tools?.map(tool => tool.name)).toEqual(expect.arrayContaining([
@@ -294,7 +584,7 @@ describe('MemoryService', () => {
       create,
       stream: vi.fn(),
     }
-    const runtime = new AgentRuntime({ modelClient: client, memory: service, toolDelayMs: 0 })
+    const runtime = new AgentRuntime({ modelClient: client, memory: service })
 
     await runtime.run({
       messages: ['我现在常住贵阳'],
@@ -386,6 +676,8 @@ describe('MemoryService', () => {
     expect(summaryRequest.messages[0].content).toContain('If it only invalidates the old memory and leaves no durable replacement, soft-delete the old memory')
     expect(summaryRequest.messages[0].content).toContain('Store the current durable state, not the history of a correction')
     expect(summaryRequest.messages[0].content).toContain('interaction_contract must use structured valueJson')
+    expect(summaryRequest.messages[0].content).toContain('A durable fact stated directly in ordinary language is valid evidence')
+    expect(summaryRequest.messages[0].content).toContain('CATEGORY SELECTION')
     expect(summaryRequest.messages[0].content).not.toContain('terminal tool')
     expect(summaryRequest.messages[1].content).toContain('请记住以后代码示例优先使用 TypeScript')
     await expect(store.getLatestSummary({ sessionId: 's1' })).resolves.toMatchObject({
@@ -527,8 +819,8 @@ describe('MemoryService', () => {
 
     expect(client.create).toHaveBeenCalledTimes(2)
     const repairRequest = vi.mocked(client.create).mock.calls[1][0] as ModelRequest
-    expect(repairRequest.toolChoice).toBe('none')
     expect(repairRequest.tools).toBeUndefined()
+    expect(repairRequest.toolChoice).toBeUndefined()
     expect(repairRequest.messages.some(message => message.content.includes('not valid JSON'))).toBe(true)
     expect(result.fallbackReason).toBeUndefined()
   })

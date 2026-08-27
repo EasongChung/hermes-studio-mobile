@@ -1,4 +1,5 @@
 import { ModelProviderError } from '../errors'
+import { agentReasoningText, normalizeAgentReasoning } from '../messages'
 import {
   abortSignal,
   isPlainRecord,
@@ -22,6 +23,7 @@ import type {
   ModelRequest,
   ModelResponse,
   ModelUsage,
+  OpenAIChatReasoningReplayFormat,
 } from '../types'
 
 interface OpenAIChatMessage {
@@ -30,6 +32,9 @@ interface OpenAIChatMessage {
     | { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }
     | { type: 'image_url'; image_url: { url: string } }
   >
+  reasoning?: string
+  reasoning_content?: string
+  reasoning_details?: unknown
   name?: string
   tool_call_id?: string
   tool_calls?: OpenAIToolCall[]
@@ -74,7 +79,6 @@ interface OpenAIChatPayload {
   stream_options?: {
     include_usage: boolean
   }
-  metadata?: Record<string, unknown>
   vl_high_resolution_images?: true
 }
 
@@ -87,6 +91,7 @@ interface OpenAIChatResponse {
       content?: string | null
       reasoning?: string | null
       reasoning_content?: string | null
+      reasoning_details?: unknown
       tool_calls?: Array<{
         index?: number
         id?: string
@@ -121,6 +126,9 @@ const defaultCapabilities: ModelCapabilities = {
   systemPrompt: true,
 }
 
+const TEXT_ONLY_CHAT_TARGET_LIMIT = 512
+const textOnlyChatTargets = new Set<string>()
+
 export class OpenAICompatibleModelClient implements ModelClient {
   readonly provider: string
   readonly requestStyle = 'openai-chat'
@@ -139,15 +147,17 @@ export class OpenAICompatibleModelClient implements ModelClient {
     }
   }
 
+  requestTarget(): string {
+    return chatCompletionsUrl(this.config)
+  }
+
   async create(request: ModelRequest): Promise<ModelResponse> {
-    const payload = toOpenAIChatPayload(this.config, { ...request, stream: false })
-    const response = await this.postJson(payload, request.signal)
-    return normalizeOpenAIChatResponse(this.provider, response)
+    const response = await this.postWithImageFallback({ ...request, stream: false }, request.signal)
+    return normalizeOpenAIChatResponse(this.provider, await parseResponseJson(this.provider, response))
   }
 
   async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
-    const payload = toOpenAIChatPayload(this.config, { ...request, stream: true })
-    const response = await this.post(payload, request.signal)
+    const response = await this.postWithImageFallback({ ...request, stream: true }, request.signal)
 
     if (!response.body) {
       throw new ModelProviderError('Model provider returned an empty stream body.', {
@@ -163,6 +173,7 @@ export class OpenAICompatibleModelClient implements ModelClient {
     let finishReason: string | undefined
     let responseId: string | undefined
     let responseModel: string | undefined
+    const reasoningDetails = new Map<string, Record<string, unknown>>()
 
     try {
       while (true) {
@@ -177,7 +188,18 @@ export class OpenAICompatibleModelClient implements ModelClient {
           const event = parseServerSentEventLine(line)
           if (!event) continue
           if (event === '[DONE]') {
-            yield { type: 'done', response: { id: responseId, model: responseModel, finishReason } }
+            yield {
+              type: 'done',
+              response: {
+                id: responseId,
+                model: responseModel,
+                finishReason,
+                reasoning: normalizeAgentReasoning(
+                  undefined,
+                  openAIReasoningDetails([...reasoningDetails.values()]),
+                ),
+              },
+            }
             return
           }
 
@@ -201,7 +223,11 @@ export class OpenAICompatibleModelClient implements ModelClient {
           const reasoning = choice.delta?.reasoning_content ?? choice.delta?.reasoning
           if (reasoning) {
             yield { type: 'reasoning-delta', text: reasoning }
+          } else {
+            const detailsText = reasoningDetailsText(choice.delta?.reasoning_details)
+            if (detailsText) yield { type: 'reasoning-delta', text: detailsText }
           }
+          mergeOpenAIReasoningDetails(reasoningDetails, choice.delta?.reasoning_details)
 
           for (const toolCallDelta of choice.delta?.tool_calls ?? []) {
             const index = toolCallDelta.index ?? 0
@@ -224,12 +250,34 @@ export class OpenAICompatibleModelClient implements ModelClient {
       reader.releaseLock()
     }
 
-    yield { type: 'done', response: { id: responseId, model: responseModel, finishReason } }
+    yield {
+      type: 'done',
+      response: {
+        id: responseId,
+        model: responseModel,
+        finishReason,
+        reasoning: normalizeAgentReasoning(
+          undefined,
+          openAIReasoningDetails([...reasoningDetails.values()]),
+        ),
+      },
+    }
   }
 
-  private async postJson(payload: OpenAIChatPayload, signal?: AbortSignal): Promise<OpenAIChatResponse> {
-    const response = await this.post(payload, signal)
-    return parseResponseJson(this.provider, response)
+  private async postWithImageFallback(request: ModelRequest, signal?: AbortSignal): Promise<Response> {
+    const model = request.model ?? this.config.defaultModel
+    const target = chatTargetKey(this.config, model)
+    const initialConfig = textOnlyChatTargets.has(target)
+      ? withoutVision(this.config)
+      : this.config
+    const payload = toOpenAIChatPayload(initialConfig, request)
+    try {
+      return await this.post(payload, signal)
+    } catch (error) {
+      if (!payloadContainsImage(payload) || !isUnsupportedImageError(error)) throw error
+      rememberTextOnlyChatTarget(target)
+      return this.post(toOpenAIChatPayload(withoutVision(this.config), request), signal)
+    }
   }
 
   private async post(payload: OpenAIChatPayload, signal?: AbortSignal): Promise<Response> {
@@ -248,19 +296,89 @@ export class OpenAICompatibleModelClient implements ModelClient {
   }
 }
 
+function chatTargetKey(config: ModelProviderConfig, model: string): string {
+  return [config.id, chatCompletionsUrl(config), model]
+    .map(value => value.trim().toLowerCase())
+    .join('\u0000')
+}
+
+function rememberTextOnlyChatTarget(target: string): void {
+  if (textOnlyChatTargets.has(target)) return
+  if (textOnlyChatTargets.size >= TEXT_ONLY_CHAT_TARGET_LIMIT) {
+    const oldest = textOnlyChatTargets.values().next().value
+    if (oldest) textOnlyChatTargets.delete(oldest)
+  }
+  textOnlyChatTargets.add(target)
+}
+
+function withoutVision(config: ModelProviderConfig): ModelProviderConfig {
+  return {
+    ...config,
+    capabilities: {
+      ...config.capabilities,
+      vision: false,
+    },
+  }
+}
+
+function payloadContainsImage(payload: OpenAIChatPayload): boolean {
+  return payload.messages.some(message =>
+    Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'))
+}
+
+function isUnsupportedImageError(error: unknown): boolean {
+  if (!(error instanceof ModelProviderError)) return false
+  let details = ''
+  try {
+    details = JSON.stringify(error.details)
+  } catch {
+    // The provider message below is still sufficient for matching.
+  }
+  const text = `${error.message} ${details}`.toLowerCase()
+  const rejectsImageUrl = text.includes('image_url') && (
+    text.includes('unknown variant') ||
+    text.includes('expected') && text.includes('text') ||
+    text.includes('supported values') && text.includes('text') ||
+    text.includes('invalid content')
+  )
+  const rejectsImages = text.includes('image') && (
+    text.includes('does not support') ||
+    text.includes('not support') ||
+    text.includes('unsupported') ||
+    text.includes('text-only') ||
+    text.includes('text only') ||
+    text.includes('only supports text')
+  )
+  return rejectsImageUrl || rejectsImages
+}
+
 export function toOpenAIChatPayload(config: ModelProviderConfig, request: ModelRequest): OpenAIChatPayload {
   const isQwenOAuth = config.id === 'qwen-oauth'
+  const supportsVision = config.capabilities?.vision !== false
+  const reasoningReplayField = openAIReasoningReplayField(
+    config,
+    request.model ?? config.defaultModel,
+  )
+  const requiresAssistantContent = requiresNonNullAssistantContent(
+    config,
+    request.model ?? config.defaultModel,
+  )
+  const tools = request.tools?.length ? request.tools.map(toOpenAIToolDefinition) : undefined
   return {
     model: request.model ?? config.defaultModel,
-    messages: request.messages.flatMap(message => toOpenAIChatMessages(message, isQwenOAuth)),
+    messages: request.messages.flatMap(message =>
+      toOpenAIChatMessages(message, isQwenOAuth, reasoningReplayField, requiresAssistantContent, supportsVision)),
     temperature: request.temperature,
     max_tokens: request.maxTokens,
-    tools: request.tools?.map(toOpenAIToolDefinition),
-    tool_choice: request.toolChoice,
+    ...(tools
+      ? {
+          tools,
+          ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}),
+        }
+      : {}),
     stream: request.stream,
     stream_options: request.stream ? { include_usage: true } : undefined,
-    metadata: request.metadata,
-    vl_high_resolution_images: isQwenOAuth ? true : undefined,
+    vl_high_resolution_images: isQwenOAuth && supportsVision ? true : undefined,
   }
 }
 
@@ -277,7 +395,10 @@ export function normalizeOpenAIChatResponse(provider: string, response: OpenAICh
     id: response.id,
     model: response.model,
     content: normalizeContent(choice?.message?.content),
-    reasoning: normalizeReasoning(choice?.message),
+    reasoning: normalizeAgentReasoning(
+      normalizeReasoning(choice?.message),
+      openAIReasoningDetails(choice?.message?.reasoning_details),
+    ),
     toolCalls: choice?.message?.tool_calls?.map(toAgentToolCall),
     usage: response.usage ? normalizeUsage(response.usage) : undefined,
     finishReason: choice?.finish_reason ?? undefined,
@@ -289,13 +410,18 @@ function normalizeReasoning(message: OpenAIChatResponseMessage | undefined): str
   if (!message) return undefined
   if (typeof message.reasoning_content === 'string' && message.reasoning_content) return message.reasoning_content
   if (typeof message.reasoning === 'string' && message.reasoning) return message.reasoning
-  if (message.reasoning_details !== undefined && message.reasoning_details !== null) return JSON.stringify(message.reasoning_details)
-  return undefined
+  return reasoningDetailsText(message.reasoning_details)
 }
 
-function toOpenAIChatMessages(message: AgentMessage, qwenOAuth = false): OpenAIChatMessage[] {
+function toOpenAIChatMessages(
+  message: AgentMessage,
+  qwenOAuth = false,
+  reasoningReplayField?: OpenAIChatReasoningReplayFormat,
+  requiresAssistantContent = false,
+  supportsVision = true,
+): OpenAIChatMessage[] {
   const plainContent = message.role === 'assistant' && message.toolCalls?.length
-    ? message.content || null
+    ? message.content || (requiresAssistantContent ? '' : null)
     : message.content
   const content = qwenOAuth && typeof plainContent === 'string'
     ? [{
@@ -304,14 +430,30 @@ function toOpenAIChatMessages(message: AgentMessage, qwenOAuth = false): OpenAIC
         ...(message.role === 'system' ? { cache_control: { type: 'ephemeral' as const } } : {}),
       }]
     : plainContent
+  const reasoningText = agentReasoningText(message.reasoning)
+  const reasoningDetails = openAIReasoningDetailsData(message)
+  const reasoningReplay: Partial<OpenAIChatMessage> = message.role !== 'assistant'
+    ? {}
+    : reasoningReplayField === 'reasoning' && reasoningText
+      ? { reasoning: reasoningText }
+      : reasoningReplayField === 'reasoning_content' && reasoningText
+        ? { reasoning_content: reasoningText }
+        : reasoningReplayField === 'reasoning_details' && reasoningDetails
+          ? { reasoning_details: reasoningDetails }
+          : reasoningReplayField === 'reasoning_details' && reasoningText
+            ? { reasoning: reasoningText }
+            : {}
   const base: OpenAIChatMessage = {
     role: message.role,
     content,
+    ...reasoningReplay,
     name: message.name,
     tool_call_id: message.toolCallId,
     tool_calls: message.toolCalls?.map(toOpenAIToolCall),
   }
-  const images = message.contentParts?.filter(part => part.type === 'image') ?? []
+  const images = supportsVision
+    ? message.contentParts?.filter(part => part.type === 'image') ?? []
+    : []
   if (message.role === 'user' && images.length > 0) {
     return [{
       ...base,
@@ -329,6 +471,107 @@ function toOpenAIChatMessages(message: AgentMessage, qwenOAuth = false): OpenAIC
       ...images.map(image => ({ type: 'image_url' as const, image_url: { url: `data:${image.mimeType};base64,${image.data}` } })),
     ],
   }]
+}
+
+function openAIReasoningReplayField(
+  config: ModelProviderConfig,
+  model: string,
+): OpenAIChatReasoningReplayFormat {
+  if (config.openAIChatReasoningReplayFormat) {
+    return config.openAIChatReasoningReplayFormat
+  }
+  const identifier = `${config.id} ${config.baseUrl || ''} ${model}`.toLowerCase()
+  // OpenRouter preserves provider-native signatures in `reasoning_details`.
+  // Several Chat Completions dialects use `reasoning_content`; the remaining
+  // OpenAI-compatible Chat adapters receive the common `reasoning` field.
+  if (identifier.includes('openrouter')) return 'reasoning_details'
+  if (usesReasoningContentProtocol(identifier)) return 'reasoning_content'
+  return 'reasoning'
+}
+
+function requiresNonNullAssistantContent(
+  config: ModelProviderConfig,
+  model: string,
+): boolean {
+  return openAIReasoningReplayField(config, model) === 'reasoning_content'
+}
+
+function usesReasoningContentProtocol(identifier: string): boolean {
+  return [
+    'deepseek',
+    'moonshot',
+    'kimi',
+    'mimo',
+    'xiaomimimo',
+    'qwen',
+    'qwq',
+    'dashscope',
+    'glm',
+    'z.ai',
+    'bigmodel',
+  ].some(part => identifier.includes(part))
+}
+
+function openAIReasoningDetailsData(message: AgentMessage): unknown {
+  return message.reasoning?.native?.format === 'openai-reasoning-details'
+    ? message.reasoning.native.data
+    : undefined
+}
+
+function openAIReasoningDetails(value: unknown) {
+  return Array.isArray(value) && value.length
+    ? {
+        format: 'openai-reasoning-details' as const,
+        data: value,
+      }
+    : undefined
+}
+
+function reasoningDetailsText(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return undefined
+  const text = value
+    .flatMap((detail) => {
+      if (!isPlainRecord(detail)) return []
+      const summary = Array.isArray(detail.summary)
+        ? detail.summary
+            .filter(isPlainRecord)
+            .map(part => typeof part.text === 'string' ? part.text : '')
+        : typeof detail.summary === 'string'
+          ? [detail.summary]
+          : []
+      return [
+        typeof detail.text === 'string' ? detail.text : '',
+        ...summary,
+      ]
+    })
+    .filter(Boolean)
+    .join('\n')
+  return text || undefined
+}
+
+function mergeOpenAIReasoningDetails(
+  target: Map<string, Record<string, unknown>>,
+  value: unknown,
+): void {
+  if (!Array.isArray(value)) return
+  for (let position = 0; position < value.length; position += 1) {
+    const detail = value[position]
+    if (!isPlainRecord(detail)) continue
+    const key = [
+      String(detail.type || 'detail'),
+      String(detail.index ?? detail.id ?? position),
+    ].join(':')
+    const current = target.get(key) ?? {}
+    const merged: Record<string, unknown> = { ...current, ...detail }
+    for (const field of ['text', 'data', 'signature']) {
+      const previous = typeof current[field] === 'string' ? current[field] : ''
+      const next = typeof detail[field] === 'string' ? detail[field] : ''
+      if (previous && next && next !== previous) {
+        merged[field] = next.startsWith(previous) ? next : `${previous}${next}`
+      }
+    }
+    target.set(key, merged)
+  }
 }
 
 function toOpenAIToolDefinition(tool: AgentToolDefinition): OpenAIToolDefinition {

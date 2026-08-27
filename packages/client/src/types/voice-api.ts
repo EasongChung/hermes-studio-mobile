@@ -1,5 +1,5 @@
-import type { TtsProviderId } from '@/api/hermes/tts'
-import type { SttProvider } from '@/api/hermes/stt-settings'
+import type { TtsProviderId } from '@/api/studio/tts'
+import type { SttProvider } from '@/api/studio/stt-settings'
 
 export type VoiceApiKind = 'tts' | 'stt'
 
@@ -16,6 +16,8 @@ export interface VoiceApiPreset {
   descriptionKey?: string
   baseUrl?: string
   defaultModel?: string
+  defaultVoice?: string
+  compatibility?: VoiceApiProviderCompatibility
   isBuiltin?: boolean
   isSecretRequired?: boolean
   capabilities?: {
@@ -26,6 +28,16 @@ export interface VoiceApiPreset {
     stylePrompt?: boolean
     voiceDesign?: boolean
     voiceClone?: boolean
+    language?: boolean
+    speed?: boolean
+    sampleRate?: boolean
+    bitRate?: boolean
+    groupId?: boolean
+    volume?: boolean
+    emotion?: boolean
+    diarize?: boolean
+    format?: boolean
+    tagAudioEvents?: boolean
   }
 }
 
@@ -41,6 +53,7 @@ export interface VoiceApiConnection {
   hasSecret: boolean
   isBuiltin?: boolean
   active?: boolean
+  available?: boolean
 }
 
 export interface VoiceApiSavePayload {

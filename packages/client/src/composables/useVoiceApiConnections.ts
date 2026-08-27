@@ -8,7 +8,7 @@ import {
   type StoredTtsProvider,
   type TtsStoredSecretsInput,
   type TtsStoredSettings,
-} from '@/api/hermes/tts-settings'
+} from '@/api/studio/tts-settings'
 import {
   deleteSttProvider,
   fetchSttSettings,
@@ -18,26 +18,45 @@ import {
   type SttProvider,
   type SttStoredSecretsInput,
   type SttStoredSettings,
-} from '@/api/hermes/stt-settings'
+} from '@/api/studio/stt-settings'
 import { useVoiceSettings } from '@/composables/useVoiceSettings'
 import { useSttSettings } from '@/composables/useSttSettings'
+import { useLocalSttModel } from '@/composables/useLocalSttModel'
 import { VOICE_API_PRESETS } from '@/constants/voiceApiPresets'
 import type { VoiceApiConnection, VoiceApiKind, VoiceApiProvider, VoiceApiSavePayload } from '@/types/voice-api'
 
 function isStoredSttProvider(provider: VoiceApiProvider): provider is StoredSttProvider {
-  return provider === 'openai' || provider === 'custom' || provider === 'doubao'
+  return provider === 'local' ||
+    provider === 'openai' ||
+    provider === 'custom' ||
+    provider === 'doubao' ||
+    provider === 'groq' ||
+    provider === 'mistral' ||
+    provider === 'xai' ||
+    provider === 'elevenlabs' ||
+    provider === 'deepinfra'
 }
 
 function isStoredTtsProvider(provider: VoiceApiProvider): provider is StoredTtsProvider {
-  return provider === 'edge' || provider === 'openai' || provider === 'custom' || provider === 'mimo' || provider === 'doubao'
+  return provider === 'edge' ||
+    provider === 'openai' ||
+    provider === 'custom' ||
+    provider === 'mimo' ||
+    provider === 'doubao' ||
+    provider === 'elevenlabs' ||
+    provider === 'gemini' ||
+    provider === 'xai' ||
+    provider === 'mistral' ||
+    provider === 'minimax' ||
+    provider === 'deepinfra'
 }
 
 function isSttProvider(provider: VoiceApiProvider): provider is SttProvider {
-  return provider === 'browser' || provider === 'openai' || provider === 'custom' || provider === 'doubao'
+  return provider === 'browser' || isStoredSttProvider(provider)
 }
 
 function isTtsProvider(provider: VoiceApiProvider): provider is StoredTtsProvider {
-  return provider === 'edge' || provider === 'openai' || provider === 'custom' || provider === 'mimo' || provider === 'doubao'
+  return isStoredTtsProvider(provider)
 }
 
 function stringSetting(settings: object, key: string): string {
@@ -51,6 +70,7 @@ export function useVoiceApiConnections() {
   const loading = ref(false)
   const vs = useVoiceSettings()
   const stt = useSttSettings()
+  const localStt = useLocalSttModel()
   const activeTtsProvider = ref<StoredTtsProvider>(vs.provider.value === 'webspeech' ? 'edge' : vs.provider.value)
   const activeSttProvider = ref<SttProvider>(stt.provider.value)
 
@@ -62,7 +82,13 @@ export function useVoiceApiConnections() {
   const activeTtsConnection = computed(() => ttsConnections.value.find(c => c.id === activeTtsId.value) || ttsConnections.value[0] || null)
   const activeSttConnection = computed(() => sttConnections.value.find(c => c.id === activeSttId.value) || sttConnections.value[0] || null)
   const ttsConnectionOptions = computed(() => ttsConnections.value.map(c => ({ label: c.label, value: c.id })))
-  const sttConnectionOptions = computed(() => sttConnections.value.map(c => ({ label: c.label, value: c.id })))
+  const sttConnectionOptions = computed(() => sttConnections.value.map(c => ({
+    label: c.label,
+    value: c.id,
+    disabled: c.provider === 'local' && !c.available,
+  })))
+  const localSttConnection = computed(() => sttConnections.value.find(c => c.provider === 'local') || null)
+  const configurableSttConnections = computed(() => sttConnections.value.filter(c => c.provider !== 'local'))
 
   function applyTtsConnectionToLegacyState(connection: VoiceApiConnection) {
     if (!isTtsProvider(connection.provider)) return
@@ -146,7 +172,11 @@ export function useVoiceApiConnections() {
   }
 
   function makeSttConnection(provider: StoredSttProvider, settings: SttStoredSettings, hasSecret: boolean): VoiceApiConnection {
-    const preset = VOICE_API_PRESETS.find(pr => pr.kind === 'stt' && pr.provider === provider && (pr.baseUrl === settings.baseUrl || !pr.baseUrl))
+    const preset = VOICE_API_PRESETS.find(pr =>
+      pr.kind === 'stt' &&
+      (pr.provider === provider || (provider === 'custom' && !!pr.baseUrl && pr.baseUrl === settings.baseUrl)) &&
+      (pr.baseUrl === settings.baseUrl || !pr.baseUrl),
+    )
     return {
       id: `stt-${provider}`,
       kind: 'stt',
@@ -164,9 +194,10 @@ export function useVoiceApiConnections() {
     loading.value = true
     try {
       await stt.loadServerSttSettings(true)
-      const [ttsData, sttData] = await Promise.all([
+      const [ttsData, sttData, localStatus] = await Promise.all([
         fetchTtsSettings(),
         fetchSttSettings(),
+        localStt.refresh().catch(() => null),
       ])
       if (ttsData.activeProvider && isTtsProvider(ttsData.activeProvider)) {
         activeTtsProvider.value = ttsData.activeProvider
@@ -194,6 +225,18 @@ export function useVoiceApiConnections() {
           voice: vs.edgeVoice.value,
         },
         {
+          id: 'stt-local',
+          kind: 'stt',
+          provider: 'local',
+          label: t('settings.voice.localSttModelTitle'),
+          isBuiltin: true,
+          hasSecret: false,
+          active: activeSttId.value === 'stt-local',
+          available: localStatus?.usable === true,
+          model: localStatus?.id,
+          settings: {},
+        },
+        {
           id: 'stt-browser',
           kind: 'stt',
           provider: 'browser',
@@ -216,7 +259,16 @@ export function useVoiceApiConnections() {
       }
 
       for (const row of sttData.providers) {
-        newConnections.push(makeSttConnection(row.provider, row.settings, row.secrets?.apiKey === '[stored]'))
+        const connection = makeSttConnection(row.provider, row.settings, row.secrets?.apiKey === '[stored]')
+        const existingBuiltIn = newConnections.find(c => c.id === connection.id)
+        if (existingBuiltIn) {
+          Object.assign(existingBuiltIn, connection, {
+            isBuiltin: true,
+            available: connection.provider === 'local' ? localStatus?.usable === true : existingBuiltIn.available,
+          })
+        } else {
+          newConnections.push(connection)
+        }
       }
 
       connections.value = newConnections.map(connection => ({
@@ -233,6 +285,9 @@ export function useVoiceApiConnections() {
   async function setActiveConnection(kind: VoiceApiKind, id: string) {
     const connection = connections.value.find(c => c.kind === kind && c.id === id)
     if (!connection) return
+    if (connection.provider === 'local' && !connection.available) {
+      throw new Error(t('settings.voice.localSttModelUnavailable'))
+    }
 
     if (kind === 'tts') {
       if (isTtsProvider(connection.provider)) {
@@ -318,6 +373,8 @@ export function useVoiceApiConnections() {
     activeSttConnection,
     ttsConnectionOptions,
     sttConnectionOptions,
+    localSttConnection,
+    configurableSttConnections,
     loading,
     refresh,
     setActiveConnection,

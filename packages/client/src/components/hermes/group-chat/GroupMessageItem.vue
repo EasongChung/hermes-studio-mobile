@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
 import ProfileAvatar from '@/components/hermes/profiles/ProfileAvatar.vue'
-import { useProfilesStore } from '@/stores/hermes/profiles'
 import {
     copyTextToClipboard,
     extractUnifiedDiffPayload,
@@ -15,15 +14,25 @@ import { parseThinking, countThinkingChars } from '@/utils/thinking-parser'
 import { useGlobalSpeech } from '@/composables/useSpeech'
 import { useVoiceSettings } from '@/composables/useVoiceSettings'
 import { speedToEdgeRate, hzToEdgePitch } from '@/utils/ttsHelpers'
-import { getDownloadUrl } from '@/api/hermes/download'
 import { formatChatTimestamp } from '@/utils/chat-timestamp'
-import type { ChatMessage, GroupWorkspaceDiffFile, GroupWorkspaceDiffPayload, RoomAgent, MemberInfo } from '@/api/hermes/group-chat'
+import {
+    type ChatMessage,
+    type GroupWorkspaceDiffFile,
+    type GroupWorkspaceDiffPayload,
+    type RoomAgent,
+    type MemberInfo,
+} from '@/api/studio/group-chat'
+import { getGroupChatAttachmentUrl } from '@/api/studio/group-chat-attachments'
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
 import { formatReferencedContentForDisplay, parseMessageReference } from '@/stores/hermes/chat'
 import { isPreviewableFile } from '@/utils/hermes/file-preview'
 import ToolChangeCard from '@/components/hermes/chat/ToolChangeCard.vue'
 import { useFilesStore } from '@/stores/hermes/files'
 import { useToolPanelStore } from '@/stores/hermes/tool-panel'
+import { isServerTtsProvider } from '@/api/studio/tts'
+import { groupAgentAvatar, groupMessageAgent, parseStoredAvatar } from '@/utils/group-agent-avatar'
+import GroupAgentMessageAvatar from './GroupAgentMessageAvatar.vue'
+import GroupAgentRobotIcon from './GroupAgentRobotIcon.vue'
 
 const MarkdownRenderer = defineAsyncComponent(async () => (await import('../chat/MarkdownRenderer.vue')).default)
 
@@ -34,26 +43,41 @@ const JSON_MAX_NODES = 1000
 const JSON_MAX_KEYS_PER_OBJECT = 50
 const JSON_MAX_ITEMS_PER_ARRAY = 50
 const JSON_TRUNCATED_KEY = '__truncated__'
+const STREAMING_MARKDOWN_RENDER_INTERVAL_MS = 100
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
     message: ChatMessage
     agents: RoomAgent[]
     members?: MemberInfo[]
     currentUserId?: string
+    embedded?: boolean
+    allowSpeech?: boolean
+}>(), {
+    embedded: false,
+    allowSpeech: true,
+})
+
+const emit = defineEmits<{
+    mentionAgent: [agent: RoomAgent]
 }>()
 
 const { t } = useI18n()
 const toast = useMessage()
 const groupChatStore = useGroupChatStore()
-const profilesStore = useProfilesStore()
 const filesStore = useFilesStore()
 const toolPanelStore = useToolPanelStore()
 const speech = useGlobalSpeech()
 const voiceSettings = useVoiceSettings()
 const previewUrl = ref<string | null>(null)
-const isAgent = computed(() => {
-    return props.agents.some(a => a.agentId === props.message.senderId || a.name === props.message.senderName)
-})
+const activeAgentInfo = computed(() => props.agents.find(a =>
+    !a.historical && (
+        a.id === props.message.senderAgentRecordId
+        || a.agentId === props.message.senderId
+        || (!props.message.senderAgentRecordId && a.name === props.message.senderName)
+    )
+))
+const agentInfo = computed(() => groupMessageAgent(props.message, props.agents))
+const isAgent = computed(() => Boolean(agentInfo.value))
 
 const isAgentError = computed(() => {
     if (props.message.role !== 'assistant') return false
@@ -65,14 +89,14 @@ const isSelf = computed(() => {
     return !!props.currentUserId && props.message.senderId === props.currentUserId
 })
 
-const agentInfo = computed(() => {
-    return props.agents.find(a => a.agentId === props.message.senderId || a.name === props.message.senderName)
+const agentOwnerInfo = computed(() => {
+    const ownerMemberId = agentInfo.value?.ownerMemberId
+    if (!ownerMemberId) return null
+    return props.members?.find(member => member.userId === ownerMemberId) || null
 })
+const messageTtsProfile = computed(() => agentInfo.value?.profile?.trim() || '')
 
 const timeStr = computed(() => formatChatTimestamp(props.message.timestamp))
-
-const avatarProfileName = computed(() => agentInfo.value?.profile || props.message.senderName || props.message.senderId)
-const avatarProfile = computed(() => profilesStore.profiles.find(profile => profile.name === agentInfo.value?.profile))
 
 // 找当前消息发送者在 members 里的记录
 const memberInfo = computed(() => {
@@ -85,26 +109,20 @@ const memberInfo = computed(() => {
 
 // 解析 member 的 avatar JSON
 const memberAvatar = computed(() => {
-    const av = memberInfo.value?.avatar
-    if (!av) return null
-    try {
-        const parsed = typeof av === 'string' ? JSON.parse(av) : av
-        if (parsed && parsed.type === 'image' && parsed.dataUrl) return parsed
-    } catch {}
-    return null
+    return parseStoredAvatar(memberInfo.value?.avatar)
 })
 
 // 当前消息要显示的头像(profile / member / fallback)
 const currentAvatar = computed(() => {
     if (isAgent.value) {
-        return avatarProfile.value?.avatar ?? null
+        return groupAgentAvatar(agentInfo.value)
     }
     return memberAvatar.value
 })
 
 // 给 ProfileAvatar 的 name seed
 const avatarDisplayName = computed(() => {
-    if (isAgent.value) return avatarProfileName.value
+    if (isAgent.value) return agentInfo.value?.agent || 'hermes'
     return props.message.senderName || props.message.senderId || 'user'
 })
 
@@ -132,7 +150,6 @@ const thinkingStreamingNow = computed(() => {
 })
 const thinkingOverride = ref<boolean | null>(null)
 const thinkingExpanded = computed(() => {
-    if (thinkingStreamingNow.value) return true
     if (thinkingOverride.value !== null) return thinkingOverride.value
     return false
 })
@@ -143,7 +160,12 @@ const contentBlocks = computed(() => {
     if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) return null
     try {
         const parsed = JSON.parse(trimmed)
-        return Array.isArray(parsed) ? parsed : null
+        if (!Array.isArray(parsed) || parsed.length === 0) return null
+        return parsed.every((block: any) => (
+            block
+            && typeof block === 'object'
+            && (block.type === 'text' || block.type === 'image' || block.type === 'file')
+        )) ? parsed : null
     } catch {
         return null
     }
@@ -157,25 +179,52 @@ const renderedAttachments = computed(() => {
         const path = String(block.path || '')
         if (!path) return []
         const name = String(block.name || `${block.type}-${index + 1}`)
+        const normalizedPath = normalizeLocalFilePath(path)
+        const attachmentUrl = getGroupChatAttachmentUrl({
+            roomId: props.message.roomId || groupChatStore.currentRoomId || '',
+            inviteCode: groupChatStore.inviteGuest
+                ? groupChatStore.activeInviteCode || undefined
+                : undefined,
+        }, normalizedPath, name)
         return [{
             id: `${props.message.id}_attachment_${index}`,
             name,
             type: block.type === 'image' ? String(block.media_type || 'image/*') : String(block.media_type || 'application/octet-stream'),
             size: 0,
-            url: getDownloadUrl(normalizeLocalFilePath(path), name),
-            path: normalizeLocalFilePath(path),
+            url: attachmentUrl,
+            path: normalizedPath,
         }]
     })
 })
 const hasAttachments = computed(() => renderedAttachments.value.length > 0)
 const displayBody = computed(() => {
-    if (props.message.role !== 'user') return assistantBody.value
     const blocks = contentBlocks.value
     if (!blocks) return assistantBody.value
     return blocks
         .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
         .map((block: any) => block.text)
         .join('\n')
+})
+const renderedDisplayBody = ref(displayBody.value)
+let streamingMarkdownTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearStreamingMarkdownTimer() {
+    if (streamingMarkdownTimer === null) return
+    clearTimeout(streamingMarkdownTimer)
+    streamingMarkdownTimer = null
+}
+
+watch([displayBody, () => props.message.isStreaming], ([body, isStreaming]) => {
+    if (!isStreaming) {
+        clearStreamingMarkdownTimer()
+        renderedDisplayBody.value = body
+        return
+    }
+    if (streamingMarkdownTimer !== null) return
+    streamingMarkdownTimer = setTimeout(() => {
+        streamingMarkdownTimer = null
+        renderedDisplayBody.value = displayBody.value
+    }, STREAMING_MARKDOWN_RENDER_INTERVAL_MS)
 })
 const parsedMessageReference = computed(() =>
     props.message.role !== 'assistant' && props.message.role !== 'tool'
@@ -200,7 +249,7 @@ const copyableContent = computed(() => {
 const quotableContent = computed(() => {
     if (isToolMessage.value || props.message.isStreaming || isAgentError.value) return null
     const content = props.message.role === 'assistant'
-        ? assistantBody.value
+        ? displayBody.value
         : parsedMessageReference.value?.reply || parsedMessageReference.value?.content || displayBody.value
     return content.trim() || null
 })
@@ -208,27 +257,15 @@ const quotableContent = computed(() => {
 const toolExpanded = ref(false)
 const expandedWorkspaceChangeIds = ref(new Set<string>())
 const isToolMessage = computed(() => props.message.role === 'tool')
-const workspaceDiffPayload = computed(() => {
-    if ((props.message.toolName || props.message.tool_name) !== 'workspace_diff') return null
-    const raw = props.message.toolResult ?? props.message.content
-    if (!raw) return null
-    if (typeof raw === 'object' && (raw as any)?.kind === 'workspace_diff') return raw as any
-    if (typeof raw === 'string') {
-        try {
-            const parsed = JSON.parse(raw)
-            return parsed?.kind === 'workspace_diff' ? parsed : null
-        } catch {
-            return null
-        }
-    }
-    return null
-})
-const workspaceDiffFiles = computed(() => Array.isArray(workspaceDiffPayload.value?.files) ? workspaceDiffPayload.value.files : [])
 const assistantWorkspaceChanges = computed(() => props.message.workspaceChanges || [])
 const selectedWorkspaceDiffFileId = computed(() => toolPanelStore.workspaceDiff?.file.id ?? null)
 const toolArgsPayload = computed(() => formatToolPayload(props.message.toolArgs))
 const toolResultPayload = computed(() => formatToolPayload(props.message.toolResult, true))
-const hasToolDetails = computed(() => !!(toolArgsPayload.value.full || toolResultPayload.value.full))
+const hasToolDetails = computed(() => !!(
+    props.message.reasoning?.trim()
+    || toolArgsPayload.value.full
+    || toolResultPayload.value.full
+))
 const fullToolArgs = computed(() => toolArgsPayload.value.full)
 const formattedToolArgs = computed(() => toolArgsPayload.value.display)
 const fullToolResult = computed(() => toolResultPayload.value.full)
@@ -259,23 +296,22 @@ function openWorkspaceDiffFileForPayload(file: GroupWorkspaceDiffFile, payload: 
     }, typeof file.patch === 'string' ? file.patch : null, payload.workspace || payload.workspace_root || '')
 }
 
-function openWorkspaceDiffFile(file: GroupWorkspaceDiffFile): void {
-    openWorkspaceDiffFileForPayload(file, workspaceDiffPayload.value)
-}
 const canPlaySpeech = computed(() => {
+    if (!props.allowSpeech) return false
     if (props.message.role !== 'assistant') return false
-    if (!assistantBody.value.trim()) return false
-    if (voiceSettings.provider.value === 'openai' || voiceSettings.provider.value === 'custom' || voiceSettings.provider.value === 'edge' || voiceSettings.provider.value === 'mimo') return true
+    if (!displayBody.value.trim()) return false
+    if (messageTtsProfile.value) return true
+    if (isServerTtsProvider(voiceSettings.provider.value)) return true
     return speech.isSupported
 })
 const isPlayingThisMessage = computed(() => {
-    if (voiceSettings.provider.value === 'openai' || voiceSettings.provider.value === 'custom' || voiceSettings.provider.value === 'edge' || voiceSettings.provider.value === 'mimo') {
+    if (messageTtsProfile.value || isServerTtsProvider(voiceSettings.provider.value)) {
         return speech.currentCustomMessageId.value === props.message.id && speech.isCustomPlaying.value
     }
     return speech.currentMessageId.value === props.message.id && speech.isPlaying.value
 })
 const isPausedThisMessage = computed(() => {
-    if (voiceSettings.provider.value === 'openai' || voiceSettings.provider.value === 'custom' || voiceSettings.provider.value === 'edge' || voiceSettings.provider.value === 'mimo') {
+    if (messageTtsProfile.value || isServerTtsProvider(voiceSettings.provider.value)) {
         return speech.currentCustomMessageId.value === props.message.id && speech.isCustomPaused.value
     }
     return speech.currentMessageId.value === props.message.id && speech.isPaused.value
@@ -436,8 +472,15 @@ function handleAutoplayTtsError(err: unknown) {
     console.warn('[GroupMessageItem] TTS autoplay failed:', err)
 }
 
-function playSpeech(content: string, autoplay = false) {
+function playSpeech(content: string, autoplay = false, profileOverride = '') {
+    if (!props.allowSpeech) return
     if (!content.trim()) return
+    const profile = profileOverride.trim() || messageTtsProfile.value
+    if (profile) {
+        if (autoplay) speech.enqueueProfileSpeech(props.message.id, content, profile)
+        else speech.profileToggle(props.message.id, content, profile)
+        return
+    }
     if (voiceSettings.provider.value === 'openai') {
         if (!voiceSettings.openaiBaseUrl.value) return
         const options = {
@@ -504,6 +547,14 @@ function playSpeech(content: string, autoplay = false) {
         else speech.openaiToggle(props.message.id, content, options)
         return
     }
+    if (isServerTtsProvider(voiceSettings.provider.value)) {
+        const options = {
+            provider: voiceSettings.provider.value,
+        }
+        if (autoplay) void speech.openaiPlay(props.message.id, content, options).catch(handleAutoplayTtsError)
+        else speech.openaiToggle(props.message.id, content, options)
+        return
+    }
     if (voiceSettings.provider.value === 'webspeech') {
         speech.toggleBrowser(props.message.id, content, {
             voiceName: voiceSettings.webspeechVoice.value || undefined,
@@ -515,7 +566,7 @@ function playSpeech(content: string, autoplay = false) {
 }
 
 function handleSpeechToggle() {
-    if (canPlaySpeech.value) playSpeech(assistantBody.value)
+    if (canPlaySpeech.value) playSpeech(displayBody.value)
 }
 
 async function copyBubbleContent() {
@@ -536,11 +587,16 @@ function referenceBubbleContent() {
         role,
         content,
         sender: props.message.senderName || props.message.senderId,
+        senderId: props.message.senderId,
     })
 }
 
 function isImage(type: string): boolean {
     return type.startsWith('image/')
+}
+
+function isVideo(type: string, name: string): boolean {
+    return type.startsWith('video/') || /\.(?:mp4|mov|m4v|webm)$/i.test(name)
 }
 
 function attachmentPath(attachment: { path?: string; url?: string }): string | null {
@@ -552,8 +608,30 @@ function attachmentPath(attachment: { path?: string; url?: string }): string | n
     }
 }
 
-function handleAttachmentClick(event: MouseEvent, attachment: { name: string; path?: string; url?: string }): void {
+function isStoredGroupAttachment(attachment: { path?: string; url?: string }): boolean {
+    const rawPath = String(attachment.path || '').trim()
+    if (rawPath) {
+        const path = rawPath.split(/[?#]/, 1)[0].split(/[\\/]/).pop() || ''
+        return /^[a-f0-9]{32}(?:\.[a-z0-9]{1,12})?$/i.test(path)
+    }
+    return /\/api\/studio\/group-chat\/(?:rooms|invites)\/[^/?#]+\/attachments\/[^/?#]+/i.test(String(attachment.url || ''))
+}
+
+function handleAttachmentClick(event: MouseEvent, attachment: { name: string; size?: number; path?: string; url?: string }): void {
     if (!isPreviewableFile(attachment.name)) return
+    if (isStoredGroupAttachment(attachment) && attachment.url) {
+        const previewEvent = new CustomEvent('hermes:preview-group-attachment', {
+            cancelable: true,
+            detail: {
+                sourceUrl: attachment.url,
+                fileName: attachment.name,
+                size: Number(attachment.size || 0),
+            },
+        })
+        window.dispatchEvent(previewEvent)
+        if (previewEvent.defaultPrevented) event.preventDefault()
+        return
+    }
     const path = attachmentPath(attachment)
     if (!path) return
     const previewEvent = new CustomEvent('hermes:preview-workspace-file', {
@@ -577,45 +655,41 @@ function formatSize(bytes: number): string {
 let autoPlayHandler: ((e: Event) => void) | null = null
 
 onMounted(() => {
+    if (!props.allowSpeech) return
     autoPlayHandler = (e: Event) => {
-        const event = e as CustomEvent<{ messageId: string; content: string }>
+        const event = e as CustomEvent<{ messageId: string; content: string; profile?: string }>
         if (event.detail?.messageId === props.message.id && canPlaySpeech.value) {
-            playSpeech(event.detail.content || assistantBody.value, true)
+            playSpeech(event.detail.content || displayBody.value, true, event.detail.profile)
         }
     }
     window.addEventListener('auto-play-speech', autoPlayHandler)
 })
 
 onBeforeUnmount(() => {
+    clearStreamingMarkdownTimer()
     if (autoPlayHandler) window.removeEventListener('auto-play-speech', autoPlayHandler)
     if (speech.currentMessageId.value === props.message.id || speech.currentCustomMessageId.value === props.message.id) speech.stop()
 })
 </script>
 
 <template>
-    <div v-if="isToolMessage" class="group-message tool-message">
-        <div class="avatar">
-            <ProfileAvatar :name="avatarDisplayName" :avatar="currentAvatar" :size="36" />
-        </div>
-
+    <div v-if="isToolMessage" class="group-message tool-message" :class="{ embedded }">
         <div class="msg-body">
-            <div class="msg-header">
+            <div v-if="!embedded" class="msg-header">
+                <GroupAgentMessageAvatar
+                    v-if="isAgent && agentInfo"
+                    :agent="agentInfo"
+                    :owner="agentOwnerInfo"
+                    :mentionable="!!activeAgentInfo"
+                    :size="22"
+                    @mention="emit('mentionAgent', $event)"
+                />
+                <ProfileAvatar v-else :name="avatarDisplayName" :avatar="currentAvatar" :size="22" />
                 <span class="sender-name">{{ message.senderName }}</span>
+                <GroupAgentRobotIcon v-if="isAgent" class="sender-agent-icon" />
                 <span v-if="isAgent && agentInfo?.description" class="agent-desc">{{ agentInfo.description }}</span>
             </div>
-            <div v-if="workspaceDiffPayload" class="tool-detail-section tool-change-standalone">
-                <ToolChangeCard
-                    :files="workspaceDiffFiles"
-                    :files-changed="workspaceDiffPayload.files_changed || 0"
-                    :additions="workspaceDiffPayload.additions || 0"
-                    :deletions="workspaceDiffPayload.deletions || 0"
-                    :expanded="toolExpanded"
-                    :selected-file-id="selectedWorkspaceDiffFileId"
-                    @toggle="toolExpanded = !toolExpanded"
-                    @select="openWorkspaceDiffFile"
-                />
-            </div>
-            <div v-else class="tool-line" :class="{ expandable: hasToolDetails }" @click="hasToolDetails && (toolExpanded = !toolExpanded)">
+            <div class="tool-line" :class="{ expandable: hasToolDetails }" @click="hasToolDetails && (toolExpanded = !toolExpanded)">
                 <svg
                     v-if="hasToolDetails"
                     width="10"
@@ -636,8 +710,15 @@ onBeforeUnmount(() => {
                 <span v-if="message.toolPreview && !toolExpanded" class="tool-preview">{{ message.toolPreview }}</span>
                 <span v-if="message.toolStatus === 'running'" class="tool-spinner"></span>
                 <span v-if="message.toolStatus === 'error'" class="tool-error-badge">{{ t('chat.error') }}</span>
+                <span v-if="message.toolStatus === 'interrupted'" class="tool-interrupted-badge">{{ t('chat.toolResultUnavailable') }}</span>
             </div>
-            <div v-if="!workspaceDiffPayload && toolExpanded && hasToolDetails" class="tool-details" @click="handleToolDetailClick">
+            <div v-if="toolExpanded && hasToolDetails" class="tool-details" @click="handleToolDetailClick">
+                <div v-if="message.reasoning?.trim()" class="tool-detail-section">
+                    <div class="tool-detail-label">{{ t('chat.thinkingLabel') }}</div>
+                    <div class="tool-detail-reasoning">
+                        <MarkdownRenderer :content="message.reasoning" />
+                    </div>
+                </div>
                 <div v-if="formattedToolArgs" class="tool-detail-section" data-copy-source="tool-args">
                     <div class="tool-detail-label">{{ t('chat.arguments') }}</div>
                     <div class="tool-detail-code-block" v-html="renderedToolArgs"></div>
@@ -647,18 +728,23 @@ onBeforeUnmount(() => {
                     <div class="tool-detail-code-block" v-html="renderedToolResult"></div>
                 </div>
             </div>
-            <span class="msg-time">{{ timeStr }}</span>
+            <span v-if="!embedded" class="msg-time">{{ timeStr }}</span>
         </div>
     </div>
-    <div v-else class="group-message" :class="{ agent: isAgent, self: isSelf }">
-        <!-- Avatar -->
-        <div class="avatar">
-            <ProfileAvatar :name="avatarDisplayName" :avatar="currentAvatar" :size="36" />
-        </div>
-
+    <div v-else class="group-message" :class="{ agent: isAgent, self: isSelf, embedded }">
         <div class="msg-body">
-            <div class="msg-header">
+            <div v-if="!embedded" class="msg-header">
+                <GroupAgentMessageAvatar
+                    v-if="isAgent && agentInfo"
+                    :agent="agentInfo"
+                    :owner="agentOwnerInfo"
+                    :mentionable="!!activeAgentInfo"
+                    :size="22"
+                    @mention="emit('mentionAgent', $event)"
+                />
+                <ProfileAvatar v-else :name="avatarDisplayName" :avatar="currentAvatar" :size="22" />
                 <span class="sender-name">{{ message.senderName }}</span>
+                <GroupAgentRobotIcon v-if="isAgent" class="sender-agent-icon" />
                 <span v-if="isAgent && agentInfo?.description" class="agent-desc">{{ agentInfo.description }}</span>
             </div>
             <div
@@ -674,9 +760,25 @@ onBeforeUnmount(() => {
                         v-for="att in renderedAttachments"
                         :key="att.id"
                         class="msg-attachment"
-                        :class="{ image: isImage(att.type) }"
+                        :class="{
+                            image: isImage(att.type),
+                            video: message.role === 'user' && isVideo(att.type, att.name),
+                        }"
                     >
                         <img v-if="isImage(att.type)" :src="att.url" :alt="att.name" class="msg-attachment-thumb" @click="previewUrl = att.url" />
+                        <template v-else-if="message.role === 'user' && isVideo(att.type, att.name)">
+                            <video
+                                class="msg-attachment-video"
+                                :src="att.url"
+                                controls
+                                playsinline
+                                preload="metadata"
+                            ></video>
+                            <div class="msg-attachment-video-footer">
+                                <span class="att-name">{{ att.name }}</span>
+                                <span v-if="att.size" class="att-size">{{ formatSize(att.size) }}</span>
+                            </div>
+                        </template>
                         <a v-else class="msg-attachment-file" :href="att.url" :title="t('download.downloadFile')" @click="handleAttachmentClick($event, att)">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -715,7 +817,7 @@ onBeforeUnmount(() => {
                     <MarkdownRenderer :content="referencedContentMarkdown" :mention-names="mentionNames" />
                     <MarkdownRenderer v-if="parsedMessageReference.reply" :content="parsedMessageReference.reply" :mention-names="mentionNames" />
                 </template>
-                <MarkdownRenderer v-else-if="displayBody" :content="displayBody" :mention-names="mentionNames" />
+                <MarkdownRenderer v-else-if="renderedDisplayBody" :content="renderedDisplayBody" :mention-names="mentionNames" />
                 <ToolChangeCard
                     v-for="change in assistantWorkspaceChanges"
                     :key="change.change_id"
@@ -730,13 +832,14 @@ onBeforeUnmount(() => {
                     @toggle="toggleWorkspaceChange(change.change_id)"
                     @select="file => openWorkspaceDiffFileForPayload(file, change)"
                 />
-                <span v-if="message.isStreaming && !displayBody" class="streaming-dots">
+                <span v-if="message.isStreaming && !renderedDisplayBody" class="streaming-dots">
                     <span></span><span></span><span></span>
                 </span>
             </div>
             <div class="message-meta">
                 <button
                     v-if="canPlaySpeech"
+                    type="button"
                     class="speech-bubble-btn"
                     :class="{ playing: isPlayingThisMessage, paused: isPausedThisMessage }"
                     :title="isPlayingThisMessage ? (isPausedThisMessage ? t('chat.resumeSpeech') : t('chat.pauseSpeech')) : t('chat.playSpeech')"
@@ -747,6 +850,7 @@ onBeforeUnmount(() => {
                 </button>
                 <button
                     v-if="copyableContent"
+                    type="button"
                     class="copy-bubble-btn"
                     :title="t('chat.copyBubble')"
                     @click="copyBubbleContent"
@@ -758,6 +862,7 @@ onBeforeUnmount(() => {
                 </button>
                 <button
                     v-if="quotableContent"
+                    type="button"
                     class="reference-bubble-btn"
                     :title="t('chat.referenceMessage')"
                     @click="referenceBubbleContent"
@@ -767,7 +872,7 @@ onBeforeUnmount(() => {
                         <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
                     </svg>
                 </button>
-                <span class="message-time">{{ timeStr }}</span>
+                <span v-if="!embedded" class="message-time">{{ timeStr }}</span>
             </div>
         </div>
     </div>
@@ -781,7 +886,6 @@ onBeforeUnmount(() => {
 
 .group-message {
     display: flex;
-    gap: 10px;
     padding: 2px 0;
     min-width: 0;
     max-width: 100%;
@@ -820,10 +924,38 @@ onBeforeUnmount(() => {
     &.self .msg-content {
         background-color: rgba(var(--accent-primary-rgb), 0.06);
     }
+
+    &.embedded {
+        width: 100%;
+        padding: 0;
+        gap: 0;
+
+        .msg-body {
+            width: 100%;
+            max-width: 100%;
+        }
+
+        .msg-content,
+        &.agent .msg-content.agent-content,
+        &.self .msg-content {
+            background: transparent;
+            border: 0;
+            border-radius: 0;
+            padding: 8px 10px;
+        }
+
+        .message-meta {
+            padding-inline: 10px;
+        }
+    }
 }
 
 .tool-message {
     align-items: flex-start;
+
+    &.embedded {
+        padding: 4px 8px;
+    }
 }
 
 .tool-line {
@@ -845,6 +977,12 @@ onBeforeUnmount(() => {
             background: rgba(0, 0, 0, 0.03);
         }
     }
+}
+
+.tool-interrupted-badge {
+    flex: 0 0 auto;
+    color: $text-muted;
+    font-size: 10px;
 }
 
 .tool-chevron {
@@ -900,21 +1038,14 @@ onBeforeUnmount(() => {
     padding: 0 4px;
     border-radius: 3px;
     line-height: 14px;
-    margin-left: 4px;
+    margin-inline-start: 4px;
 }
 
 .tool-details {
-    margin-left: 16px;
+    margin-inline-start: 16px;
     margin-top: 2px;
-    border-left: 2px solid $border-light;
-    padding-left: 10px;
-}
-
-.tool-change-standalone {
-    display: inline-block;
-    max-width: 100%;
-    min-width: 0;
-    width: fit-content;
+    border-inline-start: 2px solid $border-light;
+    padding-inline-start: 10px;
 }
 
 .assistant-workspace-change {
@@ -952,25 +1083,35 @@ onBeforeUnmount(() => {
     }
 }
 
+.tool-detail-reasoning {
+    max-height: 300px;
+    overflow-y: auto;
+    padding: 8px 10px;
+    border: 1px solid $border-light;
+    border-radius: $radius-sm;
+    background: rgba(var(--text-primary-rgb), 0.035);
+    color: $text-secondary;
+    font-size: 12px;
+
+    :deep(.markdown-body > :first-child) {
+        margin-top: 0;
+    }
+
+    :deep(.markdown-body > :last-child) {
+        margin-bottom: 0;
+    }
+}
+
 @keyframes spin {
     to {
         transform: rotate(360deg);
     }
 }
 
-.avatar {
-    width: 36px;
-    height: 36px;
-    flex-shrink: 0;
-    margin-top: 2px;
-    overflow: hidden;
-    border-radius: 8px;
-}
-
 .msg-body {
     display: flex;
     flex-direction: column;
-    min-width: 0;
+    min-width: min(260px, 85%);
     max-width: 85%;
     box-sizing: border-box;
 }
@@ -978,13 +1119,27 @@ onBeforeUnmount(() => {
 .msg-header {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding-bottom: 2px;
+    gap: 6px;
+    padding-bottom: 6px;
+    color: $text-secondary;
+    font-size: 12px;
+    line-height: 22px;
 
     .sender-name {
-        font-size: 13px;
-        font-weight: 600;
-        color: $text-primary;
+        min-width: 0;
+        max-width: 240px;
+        overflow: hidden;
+        color: inherit;
+        font-size: inherit;
+        font-weight: 400;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .sender-agent-icon {
+        flex: 0 0 auto;
+        width: 14px;
+        height: 14px;
     }
 
     .agent-desc {
@@ -1008,14 +1163,19 @@ onBeforeUnmount(() => {
     gap: 6px;
     margin-top: 4px;
     padding: 0 4px;
-    opacity: 0;
-    transition: opacity 0.15s ease;
+    padding-bottom: 4px;
+    color: $text-muted;
+    opacity: 1;
+}
 
-    .group-message:hover & {
-        opacity: 1;
+@media (hover: hover) and (pointer: fine) {
+    .group-message.self .message-meta {
+        opacity: 0;
+        transition: opacity 0.15s ease;
     }
 
-    @media (max-width: 768px) {
+    .group-message.self:hover .message-meta,
+    .group-message.self:focus-within .message-meta {
         opacity: 1;
     }
 }
@@ -1030,7 +1190,7 @@ onBeforeUnmount(() => {
     height: 24px;
     border: none;
     background: transparent;
-    color: $text-muted;
+    color: inherit;
     cursor: pointer;
     border-radius: $radius-sm;
     padding: 0;
@@ -1041,14 +1201,6 @@ onBeforeUnmount(() => {
         background: rgba(0, 0, 0, 0.06);
     }
 
-    .dark & {
-        color: #999999;
-
-        &:hover {
-            color: #cccccc;
-            background: rgba(255, 255, 255, 0.1);
-        }
-    }
 }
 
 .speech-bubble-btn {
@@ -1110,7 +1262,7 @@ onBeforeUnmount(() => {
 
 .msg-content {
     padding: 10px 14px;
-    font-size: 14px;
+    font-size: var(--font-size-base);
     line-height: 1.65;
     color: $text-primary;
     border-radius: 10px;
@@ -1150,6 +1302,15 @@ onBeforeUnmount(() => {
     }
 }
 
+:global(html.theme-has-custom-background .group-message:not(.embedded) .msg-content:not(.agent-error)),
+:global(html.theme-has-custom-background .group-message.agent:not(.embedded) .msg-content.agent-content:not(.agent-error)),
+:global(html.theme-has-custom-background .group-message.self:not(.embedded) .msg-content:not(.agent-error)) {
+    background-color: rgba(var(--bg-main-surface-rgb), 0.78);
+    border: 1px solid rgba(var(--text-primary-rgb), 0.18);
+    -webkit-backdrop-filter: blur(8px) saturate(110%);
+    backdrop-filter: blur(8px) saturate(110%);
+}
+
 .msg-attachments {
     display: flex;
     flex-wrap: wrap;
@@ -1167,6 +1328,11 @@ onBeforeUnmount(() => {
         width: 96px;
         height: 96px;
     }
+
+    &.video {
+        width: min(360px, 100%);
+        background: #000;
+    }
 }
 
 .msg-attachment-thumb {
@@ -1175,6 +1341,39 @@ onBeforeUnmount(() => {
     object-fit: cover;
     display: block;
     cursor: zoom-in;
+}
+
+.msg-attachment-video {
+    display: block;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    max-height: 280px;
+    background: #000;
+    object-fit: contain;
+}
+
+.msg-attachment-video-footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    color: $text-secondary;
+    background: $bg-secondary;
+    font-size: 12px;
+
+    .att-name {
+        min-width: 0;
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .att-size {
+        flex-shrink: 0;
+        color: $text-muted;
+        font-size: 11px;
+    }
 }
 
 .msg-attachment-file {
@@ -1270,7 +1469,7 @@ onBeforeUnmount(() => {
     .thinking-body {
         margin-top: 6px;
         padding: 6px 10px;
-        border-left: 2px solid $border-light;
+        border-inline-start: 2px solid $border-light;
         font-size: 13px;
         opacity: 0.85;
         font-style: italic;

@@ -6,24 +6,25 @@ import {
   responseToolNamespaceForName,
   responsesToAnthropicMessages,
   responsesToOpenAiChat,
-} from '../../packages/server/src/services/agent-runner/adapters/responses'
+  truncateResponsesToolOutputs,
+} from '../../packages/server/src/modules/coding-agents/protocol/adapters/responses'
 import {
   anthropicToOpenAiChat,
   anthropicToOpenAiResponses,
   openAiResponsesToAnthropicMessage,
   openAiToAnthropicMessage,
-} from '../../packages/server/src/services/agent-runner/adapters/anthropic'
+} from '../../packages/server/src/modules/coding-agents/protocol/adapters/anthropic'
 import {
   openAiChatSseToAnthropicEvents,
   openAiResponsesSseToAnthropicEvents,
   type AnthropicStreamEvent,
-} from '../../packages/server/src/services/agent-runner/adapters/anthropic-stream'
+} from '../../packages/server/src/modules/coding-agents/protocol/adapters/anthropic-stream'
 import {
   anthropicMessagesSseToResponsesEvents,
   openAiChatSseToResponsesEvents,
   openAiResponsesSseToResponsesEvents,
   type CanonicalResponsesEvent,
-} from '../../packages/server/src/services/agent-runner/adapters/responses-stream'
+} from '../../packages/server/src/modules/coding-agents/protocol/adapters/responses-stream'
 
 const target = { model: 'test-model' }
 const codexTarget = { model: 'test-model', annotateMcpToolNamespaces: true }
@@ -39,6 +40,39 @@ describe('agent runner Responses adapters', () => {
     expect(responsesToAnthropicMessages({ input: [] }, maxTarget)).toMatchObject({
       reasoning_effort: 'max',
     })
+  })
+
+  it('truncates oversized Responses function-call outputs before provider forwarding', () => {
+    const largeOutput = `${'A'.repeat(32 * 1024 + 1)}TAIL_MARKER`
+    const body = {
+      input: [
+        { role: 'user', content: [{ type: 'input_text', text: 'continue' }] },
+        { type: 'function_call_output', call_id: 'call_big', output: largeOutput },
+        { type: 'function_call_output', call_id: 'call_small', output: 'ok' },
+      ],
+    }
+
+    const sanitized = truncateResponsesToolOutputs(body)
+    const output = sanitized.input[1].output
+
+    expect(sanitized).not.toBe(body)
+    expect(output.length).toBeLessThan(largeOutput.length)
+    expect(output.length).toBeLessThanOrEqual(32 * 1024)
+    expect(Buffer.byteLength(output, 'utf8')).toBeLessThanOrEqual(32 * 1024)
+    expect(output).toContain('truncated before provider request')
+    expect(output).toContain(`original_chars=${largeOutput.length}`)
+    expect(output.endsWith('TAIL_MARKER')).toBe(true)
+    expect(sanitized.input[2]).toBe(body.input[2])
+    expect(body.input[1].output).toBe(largeOutput)
+
+    const cjkOutput = `${'界'.repeat(32 * 1024 + 1)}TAIL_MARKER`
+    const cjkSanitized = truncateResponsesToolOutputs({
+      input: [{ type: 'function_call_output', call_id: 'call_cjk', output: cjkOutput }],
+    })
+    const cjkTruncated = cjkSanitized.input[0].output
+    expect(Buffer.byteLength(cjkTruncated, 'utf8')).toBeLessThanOrEqual(32 * 1024)
+    expect(cjkTruncated).toContain(`original_bytes=${Buffer.byteLength(cjkOutput, 'utf8')}`)
+    expect(cjkTruncated.endsWith('TAIL_MARKER')).toBe(true)
   })
 
   it('converts Responses input to OpenAI Chat messages and tools', () => {
@@ -63,9 +97,8 @@ describe('agent runner Responses adapters', () => {
       top_p: 0.9,
       stream: false,
       messages: [
-        { role: 'system', content: 'be terse' },
+        { role: 'system', content: 'be terse\n\nrules' },
         { role: 'user', content: 'hello' },
-        { role: 'system', content: 'rules' },
         {
           role: 'assistant',
           content: null,
@@ -82,6 +115,181 @@ describe('agent runner Responses adapters', () => {
         function: { name: 'search', description: 'Search', parameters: { type: 'object' } },
       }],
     })
+  })
+
+  it('keeps a single top-level instructions system message at the front', () => {
+    const body = {
+      instructions: 'core system prompt',
+      input: [
+        { role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+      ],
+    }
+
+    expect(responsesToOpenAiChat(body, target).messages).toEqual([
+      { role: 'system', content: 'core system prompt' },
+      { role: 'user', content: 'hi' },
+    ])
+  })
+
+  it('merges multiple system messages into one leading message (vLLM compatibility)', () => {
+    // Codex 0.149 sends both a top-level `instructions` string and `developer`
+    // messages inside `input`. Both convert to `system`; vLLM rejects the
+    // second one ("System message must be at the beginning"), so they must be
+    // merged into a single leading system message.
+    const body = {
+      instructions: 'top-level instructions',
+      input: [
+        { role: 'developer', content: [{ type: 'input_text', text: 'developer message one' }] },
+        { role: 'user', content: [{ type: 'input_text', text: 'hello' }] },
+        { role: 'developer', content: [{ type: 'input_text', text: 'developer message two' }] },
+      ],
+    }
+
+    const messages = responsesToOpenAiChat(body, target).messages
+    expect(messages).toEqual([
+      { role: 'system', content: 'top-level instructions\n\ndeveloper message one\n\ndeveloper message two' },
+      { role: 'user', content: 'hello' },
+    ])
+    const systemMessages = messages.filter((message: any) => message.role === 'system')
+    expect(systemMessages).toHaveLength(1)
+    expect(messages[0].role).toBe('system')
+  })
+
+  it('replays Responses reasoning_content on DeepSeek tool-call continuations', () => {
+    const body = {
+      input: [
+        { role: 'user', content: [{ type: 'input_text', text: 'inspect the repo' }] },
+        {
+          type: 'reasoning',
+          id: 'rs_deepseek',
+          summary: [{ type: 'summary_text', text: 'I should inspect the repository first.' }],
+        },
+        {
+          type: 'function_call',
+          call_id: 'call_read',
+          name: 'read_file',
+          arguments: '{"path":"README.md"}',
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_read',
+          output: 'repository contents',
+        },
+      ],
+    }
+
+    expect(responsesToOpenAiChat(body, anthropicTarget).messages).toEqual([
+      { role: 'user', content: 'inspect the repo' },
+      {
+        role: 'assistant',
+        content: null,
+        reasoning_content: 'I should inspect the repository first.',
+        tool_calls: [{
+          id: 'call_read',
+          type: 'function',
+          function: { name: 'read_file', arguments: '{"path":"README.md"}' },
+        }],
+      },
+      { role: 'tool', tool_call_id: 'call_read', content: 'repository contents' },
+    ])
+    expect(responsesToOpenAiChat(body, target).messages[1]).not.toHaveProperty('reasoning_content')
+  })
+
+  it('preserves Responses image inputs for Chat and Anthropic providers', () => {
+    const imageUrl = 'data:image/png;base64,AQID'
+    const body = {
+      input: [{
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'inspect this' },
+          { type: 'input_image', image_url: imageUrl },
+        ],
+      }],
+    }
+
+    expect(responsesToOpenAiChat(body, target).messages).toEqual([{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'inspect this' },
+        { type: 'image_url', image_url: { url: imageUrl } },
+      ],
+    }])
+    expect(responsesToAnthropicMessages(body, target).messages).toEqual([{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'inspect this' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AQID' } },
+      ],
+    }])
+  })
+
+  it('preserves Responses image tool outputs without stringifying data URIs', () => {
+    const imageUrl = 'data:image/png;base64,AQID'
+    const body = {
+      input: [
+        { role: 'user', content: [{ type: 'input_text', text: 'inspect this' }] },
+        {
+          type: 'function_call',
+          call_id: 'call_image',
+          name: 'view_image',
+          arguments: '{"path":"/tmp/image.png"}',
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_image',
+          output: [{ type: 'input_image', image_url: imageUrl, detail: 'high' }],
+        },
+      ],
+    }
+
+    expect(responsesToOpenAiChat(body, target).messages).toEqual([
+      { role: 'user', content: 'inspect this' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'call_image',
+          type: 'function',
+          function: { name: 'view_image', arguments: '{"path":"/tmp/image.png"}' },
+        }],
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'call_image',
+        content: '[Image output attached for tool view_image]',
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '[Image output from tool view_image (call_image)]' },
+          { type: 'image_url', image_url: { url: imageUrl, detail: 'high' } },
+        ],
+      },
+    ])
+
+    expect(responsesToAnthropicMessages(body, target).messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'inspect this' }] },
+      {
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: 'call_image',
+          name: 'view_image',
+          input: { path: '/tmp/image.png' },
+        }],
+      },
+      {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'call_image',
+          content: [{
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: 'AQID' },
+          }],
+        }],
+      },
+    ])
   })
 
   it('groups parallel Responses function calls before Chat tool results', () => {
@@ -366,6 +574,24 @@ describe('agent runner Responses adapters', () => {
     })
   })
 
+  it('converts OpenAI-compatible reasoning_details responses to Responses output', () => {
+    expect(openAiChatToResponses({
+      id: 'chatcmpl_details',
+      choices: [{
+        message: {
+          reasoning_details: [
+            { type: 'reasoning.text', text: 'inspect ' },
+            { type: 'reasoning.text', text: 'the repository' },
+          ],
+          content: 'done',
+        },
+      }],
+    }, target).output[0]).toMatchObject({
+      type: 'reasoning',
+      summary: [{ type: 'summary_text', text: 'inspect the repository' }],
+    })
+  })
+
   it('marks expanded Hermes MCP Chat tool calls with their Responses namespace', () => {
     expect(openAiChatToResponses({
       id: 'chatcmpl_1',
@@ -506,7 +732,8 @@ describe('agent runner Responses stream adapters', () => {
 
 	    expect(events.map(event => event.type)).toEqual([
 	      'response.created',
-	      'response.reasoning.delta',
+	      'response.output_item.added',
+	      'response.reasoning_summary_text.delta',
 	      'response.output_item.added',
 	      'response.content_part.added',
       'response.output_text.delta',
@@ -514,19 +741,29 @@ describe('agent runner Responses stream adapters', () => {
       'response.output_item.added',
       'response.function_call_arguments.delta',
       'response.function_call_arguments.delta',
+      'response.output_item.done',
       'response.output_text.done',
       'response.content_part.done',
       'response.output_item.done',
       'response.output_item.done',
 	      'response.completed',
 	    ])
-	    expect(events[1].data).toMatchObject({ delta: 'think' })
-	    expect(events[4].data).toMatchObject({ delta: 'he' })
-	    expect(events[5].data).toMatchObject({ delta: 'llo' })
-	    expect(events[6].data).toMatchObject({
+	    expect(events[1].data).toMatchObject({
+	      output_index: 0,
+	      item: { type: 'reasoning', id: expect.stringMatching(/^rs_/), summary: [] },
+	    })
+	    expect(events[2].data).toMatchObject({ delta: 'think', output_index: 0, summary_index: 0 })
+	    expect(events[5].data).toMatchObject({ delta: 'he', output_index: 1 })
+	    expect(events[6].data).toMatchObject({ delta: 'llo', output_index: 1 })
+	    expect(events[7].data).toMatchObject({
+	      output_index: 2,
 	      item: { type: 'function_call', call_id: 'call_1', name: 'lookup' },
 	    })
-	    expect(events[13].data).toMatchObject({
+	    expect(events[10].data).toMatchObject({
+	      output_index: 0,
+	      item: { type: 'reasoning', summary: [{ type: 'summary_text', text: 'think' }] },
+	    })
+	    expect(events[15].data).toMatchObject({
 	      response: {
 	        model: 'test-model',
 	        status: 'completed',
@@ -544,7 +781,37 @@ describe('agent runner Responses stream adapters', () => {
         ],
       },
     })
-    expect((events[13].data as any).response.id).toBe((events[0].data as any).response.id)
+    expect((events[15].data as any).response.id).toBe((events[0].data as any).response.id)
+  })
+
+  it('accepts alternate OpenAI-compatible streaming reasoning fields', async () => {
+    const events = await collectEvents(openAiChatSseToResponsesEvents(encodedChunks([
+      'data: {"choices":[{"delta":{"reasoning":"first"}}]}\n\n',
+      'data: {"choices":[{"delta":{"reasoning_text":" second"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]), codexTarget))
+
+    expect(events.filter(event => event.type === 'response.reasoning_summary_text.delta').map(event => event.data.delta))
+      .toEqual(['first', ' second'])
+    expect((events.at(-1)?.data as any).response.output[0]).toMatchObject({
+      type: 'reasoning',
+      summary: [{ type: 'summary_text', text: 'first second' }],
+    })
+  })
+
+  it('deduplicates cumulative OpenAI-compatible reasoning_details chunks', async () => {
+    const events = await collectEvents(openAiChatSseToResponsesEvents(encodedChunks([
+      'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"first"}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"first second"}]}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]), codexTarget))
+
+    expect(events.filter(event => event.type === 'response.reasoning_summary_text.delta').map(event => event.data.delta))
+      .toEqual(['first', ' second'])
+    expect((events.at(-1)?.data as any).response.output[0]).toMatchObject({
+      type: 'reasoning',
+      summary: [{ type: 'summary_text', text: 'first second' }],
+    })
   })
 
   it('marks expanded Hermes MCP Chat SSE tool calls with their Responses namespace', async () => {
@@ -568,7 +835,7 @@ describe('agent runner Responses stream adapters', () => {
     ]))
   })
 
-  it('normalizes Anthropic Messages SSE text and tool calls to Responses events', async () => {
+  it('normalizes Anthropic Messages SSE thinking, text, and tool calls to Pi-compatible Responses events', async () => {
 	    const events = await collectEvents(anthropicMessagesSseToResponsesEvents(encodedChunks([
 	      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":80,"cache_read_input_tokens":20}}}\n\n',
 	      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"think"}}\n\n',
@@ -580,24 +847,35 @@ describe('agent runner Responses stream adapters', () => {
 
 	    expect(events.map(event => event.type)).toEqual([
 	      'response.created',
-	      'response.reasoning.delta',
+	      'response.output_item.added',
+	      'response.reasoning_summary_text.delta',
 	      'response.output_item.added',
 	      'response.content_part.added',
       'response.output_text.delta',
       'response.output_item.added',
       'response.function_call_arguments.delta',
+      'response.output_item.done',
       'response.output_text.done',
       'response.content_part.done',
       'response.output_item.done',
       'response.output_item.done',
 	      'response.completed',
 	    ])
-	    expect(events[1].data).toMatchObject({ delta: 'think' })
-	    expect(events[2].data).toMatchObject({ item: { id: 'msg_msg_1' } })
-	    expect(events[5].data).toMatchObject({
+	    expect(events[1].data).toMatchObject({
+	      output_index: 0,
+	      item: { type: 'reasoning', id: 'rs_msg_1', summary: [] },
+	    })
+	    expect(events[2].data).toMatchObject({ delta: 'think', output_index: 0, summary_index: 0 })
+	    expect(events[3].data).toMatchObject({ output_index: 1, item: { id: 'msg_msg_1' } })
+	    expect(events[6].data).toMatchObject({
+	      output_index: 2,
 	      item: { type: 'function_call', call_id: 'toolu_1', name: 'lookup' },
 	    })
-	    expect(events[11].data).toMatchObject({
+	    expect(events[8].data).toMatchObject({
+	      output_index: 0,
+	      item: { type: 'reasoning', summary: [{ type: 'summary_text', text: 'think' }] },
+	    })
+	    expect(events[13].data).toMatchObject({
 	      response: {
 	        id: 'msg_1',
 	        usage: { input_tokens: 80, cache_read_input_tokens: 20, output_tokens: 9 },
@@ -747,6 +1025,139 @@ describe('agent runner Anthropic adapters', () => {
     })
   })
 
+  it('merges multiple system messages into one leading message (vLLM compatibility)', () => {
+    // Claude Code sends its primary prompt as the top-level `system` field and
+    // injects additional `role: 'system'` messages mid-conversation (e.g. the
+    // ToolSearch deferred-tools notice). A second system message mid-conversation
+    // is rejected by vLLM with "System message must be at the beginning." (400),
+    // so the adapter must keep exactly one leading system message.
+    const body = {
+      system: [
+        { type: 'text', text: 'claude code system prompt' },
+        { type: 'text', text: 'appended rules' },
+      ],
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+        { role: 'system', content: [{ type: 'text', text: 'deferred tools are now available' }] },
+      ],
+    }
+
+    const messages = anthropicToOpenAiChat(body, anthropicTarget).messages
+    expect(messages).toEqual([
+      {
+        role: 'system',
+        content: 'claude code system prompt\nappended rules\n\ndeferred tools are now available',
+      },
+      { role: 'user', content: 'hello' },
+    ])
+    expect(messages.filter((message: any) => message.role === 'system')).toHaveLength(1)
+    expect(messages[0].role).toBe('system')
+  })
+
+  it('keeps a single in-message system prompt at the front', () => {
+    const body = {
+      messages: [
+        { role: 'system', content: 'rules' },
+        { role: 'user', content: 'hi' },
+      ],
+    }
+
+    expect(anthropicToOpenAiChat(body, anthropicTarget).messages).toEqual([
+      { role: 'system', content: 'rules' },
+      { role: 'user', content: 'hi' },
+    ])
+  })
+
+  it('preserves Anthropic image inputs for Chat and Responses providers', () => {
+    const body = {
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'inspect this' },
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: 'AQID' },
+          },
+        ],
+      }],
+    }
+    const imageUrl = 'data:image/png;base64,AQID'
+
+    expect(anthropicToOpenAiChat(body, anthropicTarget).messages).toEqual([{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'inspect this' },
+        { type: 'image_url', image_url: { url: imageUrl } },
+      ],
+    }])
+    expect(anthropicToOpenAiResponses(body, anthropicTarget).input).toEqual([{
+      role: 'user',
+      content: [
+        { type: 'input_text', text: 'inspect this' },
+        { type: 'input_image', image_url: imageUrl },
+      ],
+    }])
+  })
+
+  it('preserves Anthropic image tool results without stringifying data URIs', () => {
+    const body = {
+      messages: [
+        {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: 'image.png' } }],
+        },
+        {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'toolu_1',
+            content: [{
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/png', data: 'AQID' },
+            }],
+          }],
+        },
+      ],
+    }
+
+    expect(anthropicToOpenAiChat(body, anthropicTarget).messages).toEqual([
+      {
+        role: 'assistant',
+        content: null,
+        reasoning_content: 'tool call',
+        tool_calls: [{
+          id: 'toolu_1',
+          type: 'function',
+          function: { name: 'Read', arguments: '{"file_path":"image.png"}' },
+        }],
+      },
+      { role: 'tool', tool_call_id: 'toolu_1', content: '[Image output attached.]' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '[Image output from tool toolu_1]' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,AQID' } },
+        ],
+      },
+    ])
+    expect(anthropicToOpenAiResponses(body, anthropicTarget).input).toEqual([
+      {
+        type: 'function_call',
+        call_id: 'toolu_1',
+        name: 'Read',
+        arguments: '{"file_path":"image.png"}',
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'toolu_1',
+        output: [{
+          type: 'input_image',
+          image_url: 'data:image/png;base64,AQID',
+        }],
+      },
+    ])
+  })
+
   it('converts Anthropic messages to Responses input', () => {
     expect(anthropicToOpenAiResponses({
       system: 'system text',
@@ -821,6 +1232,52 @@ describe('agent runner Anthropic adapters', () => {
       usage: { input_tokens: 5, output_tokens: 6 },
     })
   })
+
+  it('drops unused empty optional Responses arguments using the original Anthropic tool schema', () => {
+    const message = openAiResponsesToAnthropicMessage({
+      id: 'resp_read',
+      status: 'completed',
+      output: [{
+        type: 'function_call',
+        call_id: 'call_read',
+        name: 'Read',
+        arguments: JSON.stringify({
+          file_path: '/tmp/package.json',
+          pages: '',
+          cursor: null,
+          nullable_cursor: null,
+          explicit_empty: '',
+          required_empty: '',
+        }),
+      }],
+    }, anthropicTarget, [{
+      name: 'Read',
+      input_schema: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string' },
+          pages: { type: 'string' },
+          cursor: { type: 'string' },
+          nullable_cursor: { type: ['string', 'null'] },
+          explicit_empty: { type: 'string', enum: [''] },
+          required_empty: { type: 'string' },
+        },
+        required: ['file_path', 'required_empty'],
+      },
+    }])
+
+    expect(message.content).toEqual([{
+      type: 'tool_use',
+      id: 'call_read',
+      name: 'Read',
+      input: {
+        file_path: '/tmp/package.json',
+        nullable_cursor: null,
+        explicit_empty: '',
+        required_empty: '',
+      },
+    }])
+  })
 })
 
 describe('agent runner Anthropic stream adapters', () => {
@@ -887,5 +1344,54 @@ describe('agent runner Anthropic stream adapters', () => {
       delta: { stop_reason: 'tool_use', stop_sequence: null },
       usage: { output_tokens: 3 },
     })
+  })
+
+  it('unifies Responses call and item ids while normalizing optional tool arguments', async () => {
+    const fullArguments = JSON.stringify({
+      file_path: '/tmp/package.json',
+      limit: 220,
+      offset: 0,
+      pages: '',
+    })
+    const events = await collectAnthropicEvents(openAiResponsesSseToAnthropicEvents(encodedChunks([
+      'data: {"type":"response.created","response":{"id":"resp_read"}}\n\n',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_read","call_id":"call_read","name":"Read","arguments":"","status":"in_progress"}}\n\n',
+      `data: ${JSON.stringify({ type: 'response.function_call_arguments.delta', output_index: 0, item_id: 'fc_read', delta: fullArguments })}\n\n`,
+      `data: ${JSON.stringify({ type: 'response.output_item.done', output_index: 0, item: { type: 'function_call', id: 'fc_read', call_id: 'call_read', name: 'Read', arguments: fullArguments, status: 'completed' } })}\n\n`,
+      'data: {"type":"response.completed","response":{"status":"completed","usage":{"output_tokens":8}}}\n\n',
+    ]), anthropicTarget, [{
+      name: 'Read',
+      input_schema: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string' },
+          limit: { type: 'number' },
+          offset: { type: 'number' },
+          pages: { type: 'string' },
+        },
+        required: ['file_path'],
+      },
+    }]))
+
+    const starts = events.filter(event => (
+      event.type === 'content_block_start' &&
+      (event.data as any).content_block?.type === 'tool_use'
+    ))
+    const argumentDeltas = events.filter(event => (
+      event.type === 'content_block_delta' &&
+      (event.data as any).delta?.type === 'input_json_delta'
+    ))
+
+    expect(starts).toHaveLength(1)
+    expect(starts[0].data).toMatchObject({
+      content_block: { type: 'tool_use', id: 'call_read', name: 'Read' },
+    })
+    expect(argumentDeltas).toHaveLength(1)
+    expect((argumentDeltas[0].data as any).delta.partial_json).toBe(JSON.stringify({
+      file_path: '/tmp/package.json',
+      limit: 220,
+      offset: 0,
+    }))
+    expect(JSON.stringify(events)).not.toContain('"name":"tool"')
   })
 })

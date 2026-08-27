@@ -6,7 +6,7 @@ const getSessionMock = vi.fn()
 const updateSessionStatsMock = vi.fn()
 const readConfigYamlForProfileMock = vi.fn()
 
-vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
+vi.mock('../../packages/server/src/modules/studio/repositories/session-store', () => ({
   addMessage: addMessageMock,
   clearSessionMessages: vi.fn(),
   createSession: createSessionMock,
@@ -15,15 +15,15 @@ vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   updateSessionStats: updateSessionStatsMock,
 }))
 
-vi.mock('../../packages/server/src/services/logger', () => ({
+vi.mock('../../packages/server/src/modules/studio/public/logging', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }))
 
-vi.mock('../../packages/server/src/services/config-helpers', () => ({
+vi.mock('../../packages/server/src/modules/studio/public/profile-config', () => ({
   readConfigYamlForProfile: readConfigYamlForProfileMock,
 }))
 
-vi.mock('../../packages/server/src/services/hermes/run-chat/compression', () => ({
+vi.mock('../../packages/server/src/modules/studio/services/chat-run/compression', () => ({
   buildDbHistory: vi.fn(),
   estimateSnapshotAwareHistoryUsage: vi.fn(),
   forceCompressBridgeHistory: vi.fn(),
@@ -31,17 +31,17 @@ vi.mock('../../packages/server/src/services/hermes/run-chat/compression', () => 
   replaceState: vi.fn(),
 }))
 
-vi.mock('../../packages/server/src/services/hermes/run-chat/usage', () => ({
+vi.mock('../../packages/server/src/modules/studio/services/chat-run/usage', () => ({
   calcAndUpdateUsage: vi.fn(),
   contextTokensWithCachedOverhead: vi.fn(),
   updateMessageContextTokenUsage: vi.fn(),
 }))
 
-vi.mock('../../packages/server/src/services/hermes/run-chat/abort', () => ({
+vi.mock('../../packages/server/src/modules/studio/services/chat-run/abort', () => ({
   handleAbort: vi.fn(),
 }))
 
-vi.mock('../../packages/server/src/services/hermes/run-chat/bridge-message', () => ({
+vi.mock('../../packages/server/src/modules/studio/services/chat-run/bridge-message', () => ({
   flushBridgePendingToDb: vi.fn(),
 }))
 
@@ -107,7 +107,7 @@ describe('plan session command', () => {
   it('queues running plan commands once without visible command echo', async () => {
     const state = { messages: [], isWorking: true, events: [], queue: [] }
     const { bridge, namespaceEmit, nsp, runQueuedItem, sessionMap, socket } = makeContext(state)
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/plan build the feature')!
 
     await handleSessionCommand('session-1', command, {
@@ -144,7 +144,7 @@ describe('plan session command', () => {
   it('queues running moa commands once without persisting an extra command message', async () => {
     const state = { messages: [], isWorking: true, events: [], queue: [] }
     const { bridge, namespaceEmit, nsp, runQueuedItem, sessionMap, socket } = makeContext(state)
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/moa 讨论下黄金走势')!
 
     await handleSessionCommand('session-1', command, {
@@ -183,7 +183,7 @@ describe('plan session command', () => {
   it('emits moa preset model details when starting an idle moa command', async () => {
     const state = { messages: [], isWorking: false, events: [], queue: [] }
     const { namespaceEmit, nsp, runQueuedItem, sessionMap, socket } = makeContext(state)
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/moa 讨论下黄金走势')!
 
     await handleSessionCommand('session-1', command, {
@@ -222,7 +222,7 @@ describe('plan session command', () => {
     readConfigYamlForProfileMock.mockResolvedValueOnce({})
     const state = { messages: [], isWorking: false, events: [], queue: [] }
     const { namespaceEmit, nsp, runQueuedItem, sessionMap, socket } = makeContext(state)
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/moa 讨论下黄金走势')!
 
     const handled = await handleSessionCommand('session-1', command, {
@@ -252,7 +252,7 @@ describe('plan session command', () => {
       message: 'Goal set.',
       kickoff_prompt: 'build a todo app',
     })
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/goal build a todo app')!
 
     await handleSessionCommand('session-1', command, {
@@ -272,6 +272,74 @@ describe('plan session command', () => {
     }))
   })
 
+  it('enables session YOLO before the first agent chat creates a bridge session', async () => {
+    getSessionMock.mockReturnValueOnce(null)
+    const state = { messages: [], isWorking: false, events: [], queue: [] }
+    const { bridge, namespaceEmit, nsp, runQueuedItem, sessionMap, socket } = makeContext(state, {
+      handled: true,
+      type: 'yolo',
+      action: 'yolo',
+      enabled: true,
+      message: '⚡ YOLO mode ON for this session — all commands auto-approved. Use with caution.',
+    })
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
+    const command = parseSessionCommand('/yolo')!
+
+    await handleSessionCommand('session-1', command, {
+      nsp: nsp as any,
+      socket: socket as any,
+      sessionMap,
+      bridge: bridge as any,
+      profile: 'work',
+      runQueuedItem,
+    })
+
+    expect(createSessionMock).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'session-1',
+      profile: 'work',
+      source: 'cli',
+      title: '[yolo]',
+    }))
+    expect(bridge.command).toHaveBeenCalledWith('session-1', 'yolo', 'work')
+    expect(runQueuedItem).not.toHaveBeenCalled()
+    expect(namespaceEmit).toHaveBeenCalledWith('session.command', expect.objectContaining({
+      command: 'yolo',
+      action: 'yolo',
+      enabled: true,
+      terminal: true,
+    }))
+  })
+
+  it('toggles session YOLO immediately while an agent run is active', async () => {
+    const state = { messages: [], isWorking: true, events: [], queue: [] }
+    const { bridge, namespaceEmit, nsp, runQueuedItem, sessionMap, socket } = makeContext(state, {
+      handled: true,
+      type: 'yolo',
+      action: 'yolo',
+      enabled: false,
+      message: '⚠️ YOLO mode OFF for this session — dangerous commands will require approval.',
+    })
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
+
+    await handleSessionCommand('session-1', parseSessionCommand('/yolo')!, {
+      nsp: nsp as any,
+      socket: socket as any,
+      sessionMap,
+      bridge: bridge as any,
+      profile: 'default',
+      runQueuedItem,
+    })
+
+    expect(bridge.command).toHaveBeenCalledWith('session-1', 'yolo', 'default')
+    expect(state.queue).toEqual([])
+    expect(runQueuedItem).not.toHaveBeenCalled()
+    expect(namespaceEmit).toHaveBeenCalledWith('session.command', expect.objectContaining({
+      action: 'yolo',
+      enabled: false,
+      terminal: false,
+    }))
+  })
+
   it('starts an idle /skill command with expanded storage and visible command display', async () => {
     const state = { messages: [], isWorking: false, events: [], queue: [] }
     const { bridge, namespaceEmit, nsp, runQueuedItem, sessionMap, socket } = makeContext(state, {
@@ -279,7 +347,7 @@ describe('plan session command', () => {
       type: 'skill',
       message: '[IMPORTANT: expanded skill prompt]',
     })
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/skill github-pr-review check PR 123')!
 
     await handleSessionCommand('session-1', command, {
@@ -321,7 +389,7 @@ describe('plan session command', () => {
       type: 'skill',
       message: '[IMPORTANT: expanded skill prompt]',
     })
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/skill review follow up')!
 
     await handleSessionCommand('session-1', command, {
@@ -363,7 +431,7 @@ describe('plan session command', () => {
       type: 'bundle',
       message: '[IMPORTANT: expanded bundle prompt]',
     })
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/bundles review-team focus on auth')!
 
     expect(command).toMatchObject({ name: 'bundles', args: 'review-team focus on auth' })
@@ -400,7 +468,7 @@ describe('plan session command', () => {
       type: 'bundle',
       message: '[IMPORTANT: expanded bundle prompt]',
     })
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
 
     await handleSessionCommand('session-1', parseSessionCommand('/bundles review-team')!, {
       nsp: nsp as any,
@@ -434,7 +502,7 @@ describe('plan session command', () => {
       type: 'bundle',
       message: '[IMPORTANT: bundle prompt must not run as a skill]',
     })
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
 
     await handleSessionCommand('session-1', parseSessionCommand('/skill review-team')!, {
       nsp: nsp as any,
@@ -460,7 +528,7 @@ describe('plan session command', () => {
       type: 'learn',
       message: '[IMPORTANT: expanded learn prompt]',
     })
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/learn from docs/workflow.md')!
 
     await handleSessionCommand('session-1', command, {
@@ -502,7 +570,7 @@ describe('plan session command', () => {
       type: 'learn',
       message: '[IMPORTANT: expanded learn prompt]',
     })
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/learn the workflow we just performed')!
 
     await handleSessionCommand('session-1', command, {
@@ -544,7 +612,7 @@ describe('plan session command', () => {
       type: 'learn',
       message: '[IMPORTANT: expanded bare learn prompt]',
     })
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/learn')!
 
     await handleSessionCommand('session-1', command, {
@@ -574,7 +642,7 @@ describe('plan session command', () => {
       type: 'learn',
       message: '/learn requires a newer Hermes Agent runtime with agent.learn_prompt.',
     })
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/learn from docs')!
 
     await handleSessionCommand('session-1', command, {
@@ -598,7 +666,7 @@ describe('plan session command', () => {
 
   it('keeps the client known-command registry accepted by the server parser', async () => {
     const { BRIDGE_SESSION_COMMAND_NAMES, isKnownBridgeSessionCommand } = await import('../../packages/client/src/utils/hermes/bridge-session-commands')
-    const { parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
 
     for (const commandName of BRIDGE_SESSION_COMMAND_NAMES) {
       expect(isKnownBridgeSessionCommand(`/${commandName}`)).toBe(true)
@@ -606,6 +674,8 @@ describe('plan session command', () => {
       expect(parsed).not.toBeNull()
       if (commandName === 'fork') {
         expect(parsed).toEqual(expect.objectContaining({ name: 'branch', rawName: 'fork' }))
+      } else if (commandName === 'compact') {
+        expect(parsed).toEqual(expect.objectContaining({ name: 'compress', rawName: 'compact' }))
       } else {
         expect(parsed).toEqual(expect.objectContaining({ name: commandName }))
       }
@@ -625,7 +695,7 @@ describe('plan session command', () => {
   })
 
   it('returns null for unknown slash commands so bridge runs can pass them through', async () => {
-    const { isSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { isSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
 
     expect(parseSessionCommand('/not-a-command test')).toBeNull()
     expect(isSessionCommand('/not-a-command test')).toBe(false)
@@ -641,7 +711,7 @@ describe('plan session command', () => {
       kickoff_prompt: 'fix the tests',
       max_turns: 20,
     })
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/goal fix the tests')!
 
     await handleSessionCommand('session-1', command, {
@@ -687,7 +757,7 @@ describe('plan session command', () => {
       message: 'Goal paused.',
       clear_goal_continuations: true,
     })
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/goal pause')!
 
     await handleSessionCommand('session-1', command, {
@@ -723,7 +793,7 @@ describe('plan session command', () => {
       message: 'Goal cleared.',
       clear_goal_continuations: true,
     })
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/goal done')!
 
     await handleSessionCommand('session-1', command, {
@@ -757,7 +827,7 @@ describe('plan session command', () => {
       kickoff_prompt: '[Continuing toward your standing goal]\nGoal: fix the tests',
       max_turns: 20,
     })
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/goal resume')!
 
     await handleSessionCommand('session-1', command, {
@@ -800,7 +870,7 @@ describe('plan session command', () => {
       current_run_id: 'run-123',
       message_count: 4,
     })
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/goal status')!
 
     await handleSessionCommand('session-1', command, {
@@ -826,7 +896,7 @@ describe('plan session command', () => {
   it('rejects MCP reload while the session is running', async () => {
     const state = { messages: [], isWorking: true, events: [], queue: [] }
     const { bridge, namespaceEmit, runQueuedItem, sessionMap, socket, nsp } = makeContext(state)
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/reload-mcp github')!
 
     await handleSessionCommand('session-1', command, {
@@ -852,7 +922,7 @@ describe('plan session command', () => {
   it('reloads skills while idle without queuing a model run', async () => {
     const state = { messages: [], isWorking: false, events: [], queue: [] }
     const { bridge, namespaceEmit, runQueuedItem, sessionMap, socket, nsp } = makeContext(state)
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/reload-skills')!
 
     await handleSessionCommand('session-1', command, {
@@ -877,7 +947,7 @@ describe('plan session command', () => {
   it('rejects skills reload while the session is running', async () => {
     const state = { messages: [], isWorking: true, events: [], queue: [] }
     const { bridge, namespaceEmit, runQueuedItem, sessionMap, socket, nsp } = makeContext(state)
-    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/modules/studio/services/chat-run/session-command')
     const command = parseSessionCommand('/reload-skills')!
 
     await handleSessionCommand('session-1', command, {

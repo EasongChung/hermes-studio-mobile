@@ -8,15 +8,14 @@ import {
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watchEffect } from "vue";
 import { useI18n } from "vue-i18n";
 import { useMessage } from "naive-ui";
-import { downloadFile, getDownloadUrl } from "@/api/hermes/download";
+import { downloadFile, getDownloadUrl } from "@/api/studio/download";
 import { copyToClipboard } from "@/utils/clipboard";
 import { parseThinking, countThinkingChars } from "@/utils/thinking-parser";
 import { useChatStore } from "@/stores/hermes/chat";
 import { useFilesStore } from "@/stores/hermes/files";
 import { useToolPanelStore } from "@/stores/hermes/tool-panel";
-import { useProfilesStore } from "@/stores/hermes/profiles";
 import { useSettingsStore } from "@/stores/hermes/settings";
-import ProfileAvatar from "@/components/hermes/profiles/ProfileAvatar.vue";
+import { chatSessionAgentAvatar, type ChatAgentAvatar } from "@/utils/chat-agent-avatar";
 import ToolChangeCard from "./ToolChangeCard.vue";
 import {
   copyTextToClipboard,
@@ -30,7 +29,10 @@ import { useVoiceSettings } from "@/composables/useVoiceSettings";
 import { speedToEdgeRate, hzToEdgePitch } from "@/utils/ttsHelpers";
 import { formatChatTimestamp } from "@/utils/chat-timestamp";
 import { openSubagentStream, subagentIdFromToolCall } from "@/utils/hermes/subagent-stream";
-import type { WorkspaceRunChangeSummary } from "@/api/hermes/sessions";
+import type { WorkspaceRunChangeSummary } from "@/api/studio/sessions";
+import { isServerTtsProvider } from "@/api/studio/tts";
+import type { ProfileAvatar as ProfileAvatarData } from "@/api/hermes/profiles";
+import ProfileAvatar from "@/components/hermes/profiles/ProfileAvatar.vue";
 
 const MarkdownRenderer = defineAsyncComponent(async () => (await import("./MarkdownRenderer.vue")).default);
 
@@ -42,7 +44,18 @@ const JSON_MAX_KEYS_PER_OBJECT = 50;
 const JSON_MAX_ITEMS_PER_ARRAY = 50;
 const JSON_TRUNCATED_KEY = "__truncated__";
 
-const props = defineProps<{ message: Message; highlight?: boolean; headingIdPrefix?: string; showForkAction?: boolean }>();
+const props = withDefaults(defineProps<{
+  message: Message
+  highlight?: boolean
+  headingIdPrefix?: string
+  showForkAction?: boolean
+  assistantAgent?: ChatAgentAvatar
+  userProfileName?: string
+  userProfileAvatar?: ProfileAvatarData | null
+}>(), {
+  userProfileName: "default",
+  userProfileAvatar: null,
+});
 const { t } = useI18n();
 const toast = useMessage();
 
@@ -70,7 +83,7 @@ const statusItems = computed(() => {
 });
 
 type DisplayContentFile = {
-  type: 'image' | 'file'
+  type: 'image' | 'video' | 'file'
   name: string
   path?: string
   url?: string
@@ -167,6 +180,7 @@ const contentFiles = computed<DisplayContentFile[] | null>(() => {
   if (!isContentBlockArray.value) return null;
 
   return contentBlocks.value!.flatMap<DisplayContentFile>((block, index) => {
+    if ((block as any).video_frame === true) return []
     if (block.type === 'image') {
       return [{
         type: 'image' as const,
@@ -176,9 +190,11 @@ const contentFiles = computed<DisplayContentFile[] | null>(() => {
       }].filter(file => file.path)
     }
     if (block.type === 'file') {
+      const name = String((block as any).name || `file-${index + 1}`)
+      const mediaType = String((block as any).media_type || '')
       return [{
-        type: 'file' as const,
-        name: String((block as any).name || `file-${index + 1}`),
+        type: isVideo(mediaType, name) ? 'video' as const : 'file' as const,
+        name,
         path: String((block as any).path || ''),
         context: typeof (block as any).context === 'string' ? (block as any).context : undefined,
       }].filter(file => file.path)
@@ -208,12 +224,10 @@ const selectedToolChangeFileId = ref<number | null>(null);
 const chatStore = useChatStore();
 const filesStore = useFilesStore();
 const toolPanelStore = useToolPanelStore();
-const profilesStore = useProfilesStore();
 const settingsStore = useSettingsStore();
 const speech = useGlobalSpeech();
 const voiceSettings = useVoiceSettings();
-const assistantProfileName = computed(() => chatStore.activeSession?.profile || profilesStore.activeProfileName || "default");
-const assistantProfileAvatar = computed(() => profilesStore.profiles.find(profile => profile.name === assistantProfileName.value)?.avatar);
+const assistantAgent = computed(() => props.assistantAgent || chatSessionAgentAvatar(chatStore.activeSession));
 
 // Copy entire bubble content
 const copyableContent = computed(() => {
@@ -355,6 +369,10 @@ const timeStr = computed(() => formatChatTimestamp(props.message.timestamp));
 
 function isImage(type: string): boolean {
   return type.startsWith("image/");
+}
+
+function isVideo(type: string, name: string): boolean {
+  return type.startsWith("video/") || /\.(?:mp4|mov|m4v|webm)$/i.test(name);
 }
 
 function formatSize(bytes: number): string {
@@ -593,9 +611,7 @@ const hasAttachments = computed(
 
 const toolArgsPayload = computed(() => formatToolPayload(props.message.toolArgs));
 const toolResultPayload = computed(() => formatToolPayload(props.message.toolResult, true));
-const toolChange = computed(() => props.message.toolChange || null);
 const workspaceChanges = computed(() => props.message.workspaceChanges || []);
-const hasToolChange = computed(() => (toolChange.value?.files?.length || 0) > 0);
 
 function isWorkspaceChangeExpanded(changeId: string): boolean {
   return expandedWorkspaceChangeIds.value.has(changeId);
@@ -609,7 +625,11 @@ function toggleWorkspaceChange(changeId: string): void {
 }
 
 const hasToolDetails = computed(
-  () => !!(toolArgsPayload.value.full || toolResultPayload.value.full || hasToolChange.value),
+  () => !!(
+    props.message.reasoning?.trim()
+    || toolArgsPayload.value.full
+    || toolResultPayload.value.full
+  ),
 );
 const isSubagentTool = computed(() => subagentIdFromToolCall(props.message.toolCallId) !== null);
 const hasInlineToolDetails = computed(() => hasToolDetails.value && !isSubagentTool.value);
@@ -643,14 +663,6 @@ function handleToolLineClick() {
   if (hasInlineToolDetails.value) toolExpanded.value = !toolExpanded.value;
 }
 
-async function openToolChangeFile(file: { id: string | number; path: string; additions: number; deletions: number }): Promise<void> {
-  const storedFile = toolChange.value?.files.find(candidate => String(candidate.id) === String(file.id));
-  if (!storedFile) return;
-  selectedToolChangeFileId.value = storedFile.id;
-  filesStore.closePreview();
-  await toolPanelStore.openWorkspaceDiff(storedFile, toolChange.value?.workspace || "");
-}
-
 async function openAssistantWorkspaceChangeFile(
   file: { id: string | number; path: string; additions: number; deletions: number },
   change: WorkspaceRunChangeSummary,
@@ -668,13 +680,13 @@ const canPlaySpeech = computed(() => {
   if (props.message.role !== 'assistant') return false
   if (!copyableContent.value) return false
   // OpenAI / Custom / Edge / MiMo / Doubao 不依赖浏览器 Web Speech API
-  if (voiceSettings.provider.value === 'openai' || voiceSettings.provider.value === 'custom' || voiceSettings.provider.value === 'edge' || voiceSettings.provider.value === 'mimo' || voiceSettings.provider.value === 'doubao') return true
+  if (isServerTtsProvider(voiceSettings.provider.value)) return true
   return speech.isSupported
 })
 
 const isPlayingThisMessage = computed(() => {
   // OpenAI / Custom / Edge / MiMo / Doubao 模式
-  if (voiceSettings.provider.value === 'openai' || voiceSettings.provider.value === 'custom' || voiceSettings.provider.value === 'edge' || voiceSettings.provider.value === 'mimo' || voiceSettings.provider.value === 'doubao') {
+  if (isServerTtsProvider(voiceSettings.provider.value)) {
     return speech.currentCustomMessageId.value === props.message.id && speech.isCustomPlaying.value
   }
   return speech.currentMessageId.value === props.message.id && speech.isPlaying.value
@@ -682,7 +694,7 @@ const isPlayingThisMessage = computed(() => {
 
 const isPausedThisMessage = computed(() => {
   // OpenAI / Custom / Edge / MiMo / Doubao 模式
-  if (voiceSettings.provider.value === 'openai' || voiceSettings.provider.value === 'custom' || voiceSettings.provider.value === 'edge' || voiceSettings.provider.value === 'mimo' || voiceSettings.provider.value === 'doubao') {
+  if (isServerTtsProvider(voiceSettings.provider.value)) {
     return speech.currentCustomMessageId.value === props.message.id && speech.isCustomPaused.value
   }
   return speech.currentMessageId.value === props.message.id && speech.isPaused.value
@@ -769,6 +781,13 @@ function handleSpeechToggle() {
     return
   }
 
+  if (isServerTtsProvider(voiceSettings.provider.value)) {
+    speech.openaiToggle(props.message.id, content, {
+      provider: voiceSettings.provider.value,
+    })
+    return
+  }
+
   // Web Speech API 模式
   if (voiceSettings.provider.value === 'webspeech') {
     speech.toggleBrowser(props.message.id, content, {
@@ -840,6 +859,10 @@ onMounted(() => {
           voice: voiceSettings.doubaoVoice.value,
           stylePrompt: voiceSettings.doubaoStylePrompt.value || undefined,
         }).catch(handleAutoplayTtsError)
+      } else if (isServerTtsProvider(voiceSettings.provider.value)) {
+        void speech.openaiPlay(props.message.id, content, {
+          provider: voiceSettings.provider.value,
+        }).catch(handleAutoplayTtsError)
       } else if (voiceSettings.provider.value === 'webspeech') {
         const text = speech.extractReadableText(content)
         if (text) {
@@ -870,12 +893,11 @@ onBeforeUnmount(() => {
 <template>
   <div
     class="message"
-    :class="[message.role, { highlight, 'tool-change-message': hasToolChange }]"
+    :class="[message.role, { highlight }]"
     :id="`message-${message.id}`"
   >
     <template v-if="message.role === 'tool'">
       <div
-        v-if="!hasToolChange"
         class="tool-line"
         :class="{ expandable: hasInlineToolDetails || isSubagentTool, 'subagent-entry': isSubagentTool }"
         :role="isSubagentTool ? 'button' : undefined"
@@ -922,47 +944,89 @@ onBeforeUnmount(() => {
           v-if="message.toolStatus === 'running'"
           class="tool-spinner"
         ></span>
-        <span v-if="message.toolStatus === 'error'" class="tool-error-badge">{{
-          t("chat.error")
-        }}</span>
+        <svg
+          v-if="message.toolStatus === 'done'"
+          class="tool-status-icon tool-success-icon"
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          :aria-label="t('subagent.completed')"
+          role="img"
+        >
+          <circle cx="12" cy="12" r="10" fill="currentColor" fill-opacity="0.14" />
+          <path
+            d="m8 12 3 3 5-6"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+        <svg
+          v-if="message.toolStatus === 'error'"
+          class="tool-error-badge tool-status-icon"
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          :aria-label="t('subagent.failed')"
+          role="img"
+        >
+          <circle cx="12" cy="12" r="10" fill="currentColor" fill-opacity="0.14" />
+          <path
+            d="m9 9 6 6m0-6-6 6"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+        </svg>
       </div>
-      <div
-        v-if="hasToolChange"
-        class="tool-detail-section tool-change-standalone"
-        @click="handleToolDetailClick"
-      >
-        <ToolChangeCard
-          :files="toolChange?.files || []"
-          :files-changed="toolChange?.files_changed || 0"
-          :additions="toolChange?.additions || 0"
-          :deletions="toolChange?.deletions || 0"
-          :expanded="toolExpanded"
-          :selected-file-id="selectedToolChangeFileId"
-          @toggle="toolExpanded = !toolExpanded"
-          @select="openToolChangeFile"
-        />
-      </div>
-      <div v-else-if="!isSubagentTool && toolExpanded && hasToolDetails" class="tool-details" @click="handleToolDetailClick">
-        <div v-if="formattedToolArgs" class="tool-detail-section" data-copy-source="tool-args">
-          <div class="tool-detail-label">{{ t("chat.arguments") }}</div>
-          <div class="tool-detail-code-block" v-html="renderedToolArgs"></div>
+      <Transition name="tool-detail-expand">
+        <div
+          v-if="!isSubagentTool && toolExpanded && hasToolDetails"
+          class="tool-details-expand"
+        >
+          <div class="tool-details" @click="handleToolDetailClick">
+            <div v-if="message.reasoning?.trim()" class="tool-detail-section">
+              <div class="tool-detail-label">{{ t("chat.thinkingLabel") }}</div>
+              <div class="tool-detail-reasoning">
+                <MarkdownRenderer :content="message.reasoning" />
+              </div>
+            </div>
+            <div v-if="formattedToolArgs" class="tool-detail-section" data-copy-source="tool-args">
+              <div class="tool-detail-label">{{ t("chat.arguments") }}</div>
+              <div class="tool-detail-code-block" v-html="renderedToolArgs"></div>
+            </div>
+            <div v-if="formattedToolResult" class="tool-detail-section" data-copy-source="tool-result">
+              <div class="tool-detail-label">{{ t("chat.result") }}</div>
+              <div class="tool-detail-code-block" v-html="renderedToolResult"></div>
+            </div>
+          </div>
         </div>
-        <div v-if="formattedToolResult" class="tool-detail-section" data-copy-source="tool-result">
-          <div class="tool-detail-label">{{ t("chat.result") }}</div>
-          <div class="tool-detail-code-block" v-html="renderedToolResult"></div>
-        </div>
-      </div>
+      </Transition>
     </template>
     <template v-else>
       <div class="msg-body">
-        <ProfileAvatar
-          v-if="message.role === 'assistant'"
-          class="msg-avatar"
-          :name="assistantProfileName"
-          :avatar="assistantProfileAvatar"
-          :size="40"
-        />
         <div class="msg-content" :class="message.role">
+          <div v-if="message.role === 'user'" class="message-author user-message-author">
+            <span class="message-author-name" dir="auto">{{ userProfileName }}</span>
+            <ProfileAvatar
+              class="user-profile-avatar"
+              :name="userProfileName"
+              :avatar="userProfileAvatar"
+              :size="22"
+            />
+          </div>
+          <div v-if="message.role === 'assistant'" class="message-author assistant-message-author">
+            <img
+              class="msg-avatar"
+              :src="assistantAgent.src"
+              :alt="assistantAgent.label"
+              draggable="false"
+            >
+            <span class="message-author-name" dir="auto">{{ assistantAgent.label }}</span>
+          </div>
           <div
             class="message-bubble"
             :class="{
@@ -978,7 +1042,11 @@ onBeforeUnmount(() => {
                 v-for="att in message.attachments"
                 :key="att.id"
                 class="msg-attachment"
-                :class="{ image: isImage(att.type), 'has-context': !!att.context }"
+                :class="{
+                  image: isImage(att.type),
+                  video: message.role === 'user' && isVideo(att.type, att.name),
+                  'has-context': !!att.context,
+                }"
               >
                 <template v-if="isImage(att.type) && att.url">
                   <img
@@ -987,6 +1055,19 @@ onBeforeUnmount(() => {
                     class="msg-attachment-thumb"
                     @click="previewUrl = att.url"
                   />
+                </template>
+                <template v-else-if="message.role === 'user' && isVideo(att.type, att.name) && att.url">
+                  <video
+                    class="msg-attachment-video"
+                    :src="att.url"
+                    controls
+                    playsinline
+                    preload="metadata"
+                  ></video>
+                  <div class="msg-attachment-video-footer">
+                    <span class="att-name">{{ att.name }}</span>
+                    <span class="att-size">{{ formatSize(att.size) }}</span>
+                  </div>
                 </template>
                 <template v-else>
                   <div class="msg-attachment-file" @click="handleAttachmentDownload(att)" style="cursor: pointer;" :title="t('download.downloadFile')">
@@ -1070,7 +1151,11 @@ onBeforeUnmount(() => {
                     v-for="(file, idx) in contentFiles"
                     :key="idx"
                     class="msg-attachment"
-                    :class="{ image: file.type === 'image', 'has-context': !!file.context }"
+                    :class="{
+                      image: file.type === 'image',
+                      video: file.type === 'video',
+                      'has-context': !!file.context,
+                    }"
                   >
                     <template v-if="file.type === 'image'">
                       <img
@@ -1079,6 +1164,18 @@ onBeforeUnmount(() => {
                         class="msg-attachment-thumb"
                         @click="previewUrl = getContentFileUrl(file)"
                       />
+                    </template>
+                    <template v-else-if="file.type === 'video'">
+                      <video
+                        class="msg-attachment-video"
+                        :src="getContentFileUrl(file)"
+                        controls
+                        playsinline
+                        preload="metadata"
+                      ></video>
+                      <div class="msg-attachment-video-footer">
+                        <span class="att-name">{{ file.name }}</span>
+                      </div>
                     </template>
                     <template v-else>
                       <div
@@ -1263,10 +1360,13 @@ onBeforeUnmount(() => {
     }
 
     .msg-avatar {
-      width: 40px;
-      height: 40px;
+      width: 22px;
+      height: 22px;
       flex-shrink: 0;
-      margin-top: 2px;
+      box-sizing: border-box;
+      border: 1px solid #fff;
+      border-radius: 50%;
+      object-fit: cover;
     }
 
     .message-bubble {
@@ -1283,10 +1383,6 @@ onBeforeUnmount(() => {
 
   &.tool {
     align-items: flex-start;
-
-    &.tool-change-message {
-      max-width: 100%;
-    }
   }
 
   &.system {
@@ -1333,9 +1429,43 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
 }
 
+.message-author {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  margin-bottom: 6px;
+  color: $text-secondary;
+  font-size: 12px;
+  line-height: 22px;
+}
+
+.user-message-author {
+  align-self: flex-end;
+  justify-content: flex-end;
+}
+
+.assistant-message-author {
+  align-self: flex-start;
+  justify-content: flex-start;
+}
+
+.message-author-name {
+  min-width: 0;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-profile-avatar {
+  box-sizing: border-box;
+  border: 1px solid #fff;
+}
+
 .message-bubble {
   padding: 10px 14px;
-  font-size: 14px;
+  font-size: var(--font-size-base);
   line-height: 1.65;
   word-break: break-word;
   overflow-wrap: anywhere;
@@ -1346,14 +1476,14 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
 
   &.system {
-    border-left: 3px solid $warning;
+    border-inline-start: 3px solid $warning;
     border-radius: $radius-sm;
     max-width: 80%;
     background-color: rgba(var(--warning-rgb), 0.06);
   }
 
   &.command {
-    border-left: none;
+    border-inline-start: none;
     border: 1px solid rgba(var(--accent-primary-rgb), 0.12);
     background-color: rgba(var(--accent-primary-rgb), 0.04);
     color: $text-secondary;
@@ -1387,6 +1517,14 @@ onBeforeUnmount(() => {
       0 0 20px rgba(255, 107, 107, 0.2);
     animation: rainbow-glow 4s linear infinite;
   }
+}
+
+:global(html.theme-has-custom-background .message.user .message-bubble:not(.system):not(.command):not(.agent-error)),
+:global(html.theme-has-custom-background .message.assistant .message-bubble:not(.system):not(.command):not(.agent-error)) {
+  background-color: rgba(var(--bg-main-surface-rgb), 0.78);
+  border: 1px solid rgba(var(--text-primary-rgb), 0.18);
+  -webkit-backdrop-filter: blur(8px) saturate(110%);
+  backdrop-filter: blur(8px) saturate(110%);
 }
 
 .command-result {
@@ -1522,6 +1660,11 @@ onBeforeUnmount(() => {
   &.image.has-context {
     max-width: 420px;
   }
+
+  &.video {
+    width: min(360px, 100%);
+    background: #000;
+  }
 }
 
 .msg-attachment-thumb {
@@ -1535,6 +1678,39 @@ onBeforeUnmount(() => {
 .msg-attachment.has-context .msg-attachment-thumb {
   max-width: 420px;
   max-height: 280px;
+}
+
+.msg-attachment-video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: 280px;
+  background: #000;
+  object-fit: contain;
+}
+
+.msg-attachment-video-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  color: $text-secondary;
+  background: rgba(0, 0, 0, 0.04);
+  font-size: 12px;
+
+  .att-name {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .att-size {
+    flex-shrink: 0;
+    color: $text-muted;
+    font-size: 11px;
+  }
 }
 
 .msg-attachment-context {
@@ -1618,7 +1794,7 @@ onBeforeUnmount(() => {
   .thinking-body {
     margin-top: 6px;
     padding: 6px 10px;
-    border-left: 2px solid $border-light;
+    border-inline-start: 2px solid $border-light;
     font-size: 13px;
     opacity: 0.85;
     font-style: italic;
@@ -1633,6 +1809,7 @@ onBeforeUnmount(() => {
   gap: 6px;
   margin-top: 4px;
   padding: 0 4px;
+  color: $text-muted;
   opacity: 0;
   transition: opacity 0.15s ease;
 
@@ -1657,7 +1834,7 @@ onBeforeUnmount(() => {
   height: 24px;
   border: none;
   background: transparent;
-  color: $text-muted;
+  color: inherit;
   cursor: pointer;
   border-radius: $radius-sm;
   padding: 0;
@@ -1668,14 +1845,6 @@ onBeforeUnmount(() => {
     background: rgba(0, 0, 0, 0.06);
   }
 
-  .dark & {
-    color: #999999;
-
-    &:hover {
-      color: #cccccc;
-      background: rgba(255, 255, 255, 0.1);
-    }
-  }
 }
 
 .speech-bubble-btn {
@@ -1701,12 +1870,8 @@ onBeforeUnmount(() => {
 
 .message-time {
   font-size: 11px;
-  color: $text-muted;
+  color: inherit;
   user-select: none;
-
-  .dark & {
-    color: #999999;
-  }
 }
 
 .tool-line {
@@ -1720,6 +1885,16 @@ onBeforeUnmount(() => {
   min-width: 0;
   max-width: 100%;
   box-sizing: border-box;
+
+  &.subagent-entry {
+    display: inline-flex;
+    width: fit-content;
+    max-width: min(560px, calc(100% - 8px));
+
+    .tool-preview {
+      flex-grow: 0;
+    }
+  }
 
   &.expandable {
     cursor: pointer;
@@ -1771,32 +1946,59 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 
+.tool-status-icon {
+  flex: 0 0 auto;
+  margin-inline-start: 4px;
+}
+
+.tool-success-icon {
+  color: $success;
+}
+
 .tool-error-badge {
-  font-size: 9px;
   color: $error;
-  background: rgba(var(--error-rgb), 0.08);
-  padding: 0 4px;
-  border-radius: 3px;
-  line-height: 14px;
-  margin-left: 4px;
+}
+
+.tool-details-expand {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .tool-details {
-  margin-left: 16px;
+  min-height: 0;
+  overflow: hidden;
+  margin-inline-start: 16px;
   margin-top: 2px;
-  border-left: 2px solid $border-light;
-  padding-left: 10px;
+  border-inline-start: 2px solid $border-light;
+  padding-inline-start: 10px;
+}
+
+.tool-detail-expand-enter-active,
+.tool-detail-expand-leave-active {
+  transition:
+    grid-template-rows 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 150ms ease,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.tool-detail-expand-enter-from,
+.tool-detail-expand-leave-to {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-detail-expand-enter-active,
+  .tool-detail-expand-leave-active {
+    transition: none;
+  }
 }
 
 .tool-detail-section {
   margin-bottom: 6px;
-}
-
-.tool-change-standalone {
-  display: inline-block;
-  max-width: 100%;
-  min-width: 0;
-  width: fit-content;
 }
 
 .tool-detail-label {
@@ -1833,6 +2035,25 @@ onBeforeUnmount(() => {
   }
 }
 
+.tool-detail-reasoning {
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  border: 1px solid $border-light;
+  border-radius: $radius-sm;
+  background: rgba(var(--text-primary-rgb), 0.035);
+  color: $text-secondary;
+  font-size: 12px;
+
+  :deep(.markdown-body > :first-child) {
+    margin-top: 0;
+  }
+
+  :deep(.markdown-body > :last-child) {
+    margin-bottom: 0;
+  }
+}
+
 .tool-change-loading {
   color: $text-muted;
   font-size: 11px;
@@ -1853,7 +2074,7 @@ onBeforeUnmount(() => {
   width: 2px;
   height: 1em;
   background-color: $text-muted;
-  margin-left: 2px;
+  margin-inline-start: 2px;
   vertical-align: text-bottom;
   animation: blink 0.8s infinite;
 }
@@ -1930,19 +2151,14 @@ onBeforeUnmount(() => {
     max-width: 100%;
   }
 
-  .tool-change-standalone {
-    min-width: 0;
-    width: fit-content;
-  }
-
   :global(.tool-change-drawer-header) {
-    padding-left: 12px !important;
-    padding-right: 12px !important;
+    padding-inline-start: 12px !important;
+    padding-inline-end: 12px !important;
   }
 
   :global(.tool-change-drawer-body-content) {
-    padding-left: 8px !important;
-    padding-right: 8px !important;
+    padding-inline-start: 8px !important;
+    padding-inline-end: 8px !important;
   }
 }
 </style>

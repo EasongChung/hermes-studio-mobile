@@ -8,15 +8,17 @@ import NousLoginModal from './NousLoginModal.vue'
 import CopilotLoginModal from './CopilotLoginModal.vue'
 import XaiOAuthLoginModal from './XaiOAuthLoginModal.vue'
 import AnthropicLoginModal from './AnthropicLoginModal.vue'
+import MiniMaxOAuthLoginModal from './MiniMaxOAuthLoginModal.vue'
 import { checkCopilotToken, enableCopilot, type CopilotTokenSource } from '@/api/hermes/copilot-auth'
-import { fetchProviderModels, type ProviderApiMode } from '@/api/hermes/system'
+import { fetchProviderModels } from '@/api/hermes/system'
+import type { ProviderApiMode } from '@/api/studio/provider-api-mode'
 import { inferApiKeyFunPresetProvider, isApiKeyFunBaseUrl, type ApiKeyFunPresetProvider } from '@/utils/providerBaseUrl'
 
 const { t } = useI18n()
 
 const emit = defineEmits<{
   close: []
-  saved: []
+  saved: [globalModelsAlreadyRefreshed?: boolean]
 }>()
 
 const modelsStore = useModelsStore()
@@ -31,6 +33,7 @@ const showNousLogin = ref(false)
 const showCopilotLogin = ref(false)
 const showXaiLogin = ref(false)
 const showAnthropicLogin = ref(false)
+const showMiniMaxLogin = ref(false)
 const copilotChecking = ref(false)
 
 const providerType = ref<'preset' | 'custom'>('preset')
@@ -87,6 +90,7 @@ const COPILOT_KEY = 'copilot'
 const CLIPROXYAPI_KEY = 'cliproxyapi'
 const XAI_OAUTH_KEY = 'xai-oauth'
 const CLAUDE_OAUTH_KEY = 'claude-oauth'
+const MINIMAX_OAUTH_KEY = 'minimax-oauth'
 const ALIBABA_CODING_KEY = 'alibaba-coding-plan'
 const CUSTOM_STORED_PRESET_KEYS = new Set(['fun-codex', 'fun-claude'])
 const ALIBABA_CODING_REGIONS = {
@@ -100,6 +104,7 @@ const isCopilot = computed(() => selectedPreset.value === COPILOT_KEY)
 const isCliproxyApi = computed(() => selectedPreset.value === CLIPROXYAPI_KEY)
 const isXaiOAuth = computed(() => selectedPreset.value === XAI_OAUTH_KEY)
 const isClaudeOAuth = computed(() => selectedPreset.value === CLAUDE_OAUTH_KEY)
+const isMiniMaxOAuth = computed(() => selectedPreset.value === MINIMAX_OAUTH_KEY)
 const isAlibabaCoding = computed(() => selectedPreset.value === ALIBABA_CODING_KEY)
 const alibabaCodingRegion = ref<'intl' | 'cn'>('intl')
 
@@ -118,7 +123,8 @@ const canFetchProviderCatalog = computed(() =>
     !isNous.value &&
     !isCopilot.value &&
     !isXaiOAuth.value &&
-    !isClaudeOAuth.value
+    !isClaudeOAuth.value &&
+    !isMiniMaxOAuth.value
   )),
 )
 
@@ -188,6 +194,8 @@ watch(selectedPreset, (val) => {
       showXaiLogin.value = true
     } else if (val === CLAUDE_OAUTH_KEY) {
       showAnthropicLogin.value = true
+    } else if (val === MINIMAX_OAUTH_KEY) {
+      showMiniMaxLogin.value = true
     }
   }
 })
@@ -292,11 +300,16 @@ async function handleSave() {
     return
   }
 
+  if (isMiniMaxOAuth.value) {
+    showMiniMaxLogin.value = true
+    return
+  }
+
   if (!formData.value.base_url.trim()) {
     message.warning(t('models.baseUrlRequired'))
     return
   }
-  if (!formData.value.api_key.trim() && !isCliproxyApi.value && !isXaiOAuth.value && !isClaudeOAuth.value) {
+  if (!formData.value.api_key.trim() && !isCliproxyApi.value && !isXaiOAuth.value && !isClaudeOAuth.value && !isMiniMaxOAuth.value) {
     message.warning(t('models.apiKeyRequired'))
     return
   }
@@ -330,7 +343,7 @@ async function handleSave() {
       providerKey,
     })
     message.success(t('models.providerAdded'))
-    emit('saved')
+    emit('saved', true)
   } catch (e: any) {
     message.error(e.message)
   } finally {
@@ -364,6 +377,12 @@ async function handleXaiSuccess() {
 
 async function handleAnthropicSuccess() {
   showAnthropicLogin.value = false
+  message.success(t('models.providerAdded'))
+  emit('saved')
+}
+
+async function handleMiniMaxSuccess() {
+  showMiniMaxLogin.value = false
   message.success(t('models.providerAdded'))
   emit('saved')
 }
@@ -434,6 +453,11 @@ function handleAnthropicClose() {
   selectedPreset.value = null
 }
 
+function handleMiniMaxClose() {
+  showMiniMaxLogin.value = false
+  selectedPreset.value = null
+}
+
 function handleClose() {
   showModal.value = false
   setTimeout(() => emit('close'), 200)
@@ -446,7 +470,7 @@ function handleClose() {
     preset="card"
     :title="t('models.addProvider')"
     :style="{ width: 'min(520px, calc(100vw - 32px))' }"
-    :mask-closable="!loading && !showCodexLogin && !showNousLogin && !showCopilotLogin && !showXaiLogin && !showAnthropicLogin"
+    :mask-closable="!loading && !showCodexLogin && !showNousLogin && !showCopilotLogin && !showXaiLogin && !showAnthropicLogin && !showMiniMaxLogin"
     @after-leave="emit('close')"
   >
     <NForm label-placement="top" autocomplete="off">
@@ -508,7 +532,7 @@ function handleClose() {
         />
       </NFormItem>
 
-      <NFormItem v-if="!isCodex && !isNous && !isClaudeOAuth" :label="t('models.apiKey')" :required="!isCliproxyApi && !isXaiOAuth">
+      <NFormItem v-if="!isCodex && !isNous && !isClaudeOAuth && !isMiniMaxOAuth" :label="t('models.apiKey')" :required="!isCliproxyApi && !isXaiOAuth">
         <NInput
           v-model:value="formData.api_key"
           type="password"
@@ -594,6 +618,12 @@ function handleClose() {
       v-if="showAnthropicLogin"
       @close="handleAnthropicClose"
       @success="handleAnthropicSuccess"
+    />
+
+    <MiniMaxOAuthLoginModal
+      v-if="showMiniMaxLogin"
+      @close="handleMiniMaxClose"
+      @success="handleMiniMaxSuccess"
     />
 
   </NModal>

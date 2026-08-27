@@ -1,15 +1,21 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { tmpdir } from 'os'
 import YAML from 'js-yaml'
+import '../../packages/server/src/bootstrap/agent-profile-adapter'
 import {
   applyAnthropicOAuthDefaultModel,
   saveAnthropicOAuthTokensForProfile,
   status as anthropicStatus,
-} from '../../packages/server/src/controllers/hermes/anthropic-auth'
+} from '../../packages/server/src/modules/hermes/controllers/anthropic-auth'
 
 let hermesHome = ''
+const mockResolveAuthorizedCredentials = vi.hoisted(() => vi.fn())
+
+vi.mock('../../packages/server/src/modules/hermes/services/providers/authorized-provider-credentials', () => ({
+  resolveAuthorizedProviderRuntimeCredentials: mockResolveAuthorizedCredentials,
+}))
 
 function writeFile(relativePath: string, content: string) {
   const target = join(hermesHome, relativePath)
@@ -40,6 +46,7 @@ describe('Anthropic OAuth controller', () => {
   beforeEach(() => {
     hermesHome = mkdtempSync(join(tmpdir(), 'hwui-oauth-provider-'))
     process.env.HERMES_HOME = hermesHome
+    mockResolveAuthorizedCredentials.mockReset()
   })
 
   afterEach(() => {
@@ -75,8 +82,16 @@ describe('Anthropic OAuth controller', () => {
     expect(readYaml('config.yaml').model).toEqual({ provider: 'deepseek', default: 'deepseek-chat' })
     expect(readYaml('profiles/research/config.yaml').model).toEqual({ provider: 'claude-oauth', default: 'claude-sonnet-4-6' })
 
+    mockResolveAuthorizedCredentials.mockResolvedValue({
+      provider: 'anthropic',
+      apiKey: 'anthropic-access-token',
+    })
     const ctx = makeCtx('research')
     await anthropicStatus(ctx)
     expect(ctx.body).toMatchObject({ authenticated: true })
+    expect(mockResolveAuthorizedCredentials).toHaveBeenCalledWith({
+      profile: 'research',
+      provider: 'claude-oauth',
+    })
   })
 })

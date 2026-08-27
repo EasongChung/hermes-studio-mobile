@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { NModal, NForm, NFormItem, NInput, NButton, NSelect, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { probeVoiceProvider, type VoiceProviderProbeModel } from '@/api/hermes/voice-provider-probe'
+import { probeVoiceProvider, type VoiceProviderProbeModel } from '@/api/studio/voice-provider-probe'
 import { VOICE_API_PRESETS } from '@/constants/voiceApiPresets'
 import { DOUBAO_TTS_2_RESOURCE_ID, DOUBAO_TTS_DEFAULT_VOICE, DOUBAO_TTS_VOICE_OPTIONS, doubaoTtsResourceForVoice } from '@/constants/doubaoTtsVoices'
 import type { VoiceApiKind, VoiceApiProviderCompatibility } from '@/types/voice-api'
@@ -208,12 +208,13 @@ function cancelProbe() {
 function handlePresetChange(id: string) {
   selectedPresetId.value = id
   const preset = VOICE_API_PRESETS.find(p => p.id === id)
-  compatibility.value = preset?.provider === 'custom' ? 'openai-compatible' : (preset?.provider === 'openai' ? 'openai-compatible' : 'manual')
+  compatibility.value = preset?.compatibility ||
+    (preset?.provider === 'custom' || preset?.provider === 'openai' ? 'openai-compatible' : 'manual')
   const isDoubaoTts = props.kind === 'tts' && preset?.provider === 'doubao'
   formData.value = {
     baseUrl: preset?.baseUrl || '',
     model: isDoubaoTts ? DOUBAO_TTS_2_RESOURCE_ID : (preset?.defaultModel || ''),
-    voice: isDoubaoTts ? DOUBAO_TTS_DEFAULT_VOICE : '',
+    voice: isDoubaoTts ? DOUBAO_TTS_DEFAULT_VOICE : (preset?.defaultVoice || ''),
     apiKey: '',
     audioTranscode: 'none',
   }
@@ -465,7 +466,7 @@ async function handleSave() {
           <div v-else-if="probeErrorSummary" class="helper-text">{{ t('settings.voice.discoveryFailedManualFallback') }}</div>
         </section>
 
-        <section v-if="isDoubaoTtsPreset" class="form-section">
+        <section v-if="kind === 'tts' && selectedPreset.capabilities?.voices" class="form-section">
           <div class="section-heading">
             <span>{{ t('settings.voice.voice') }}</span>
             <small>{{ t('settings.voice.doubaoVoiceHint') }}</small>
@@ -473,12 +474,18 @@ async function handleSave() {
 
           <NFormItem :label="t('settings.voice.voice')">
             <NSelect
+              v-if="isDoubaoTtsPreset"
               v-model:value="formData.voice"
               :options="doubaoVoiceOptions"
               tag
               filterable
               data-testid="voice-provider-voice"
               @update:value="handleDoubaoVoiceUpdate"
+            />
+            <NInput
+              v-else
+              v-model:value="formData.voice"
+              data-testid="voice-provider-voice"
             />
           </NFormItem>
         </section>

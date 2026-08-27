@@ -29,11 +29,18 @@ vi.mock('vue-router', async (importOriginal) => {
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string, params?: Record<string, unknown>) => params?.version ? `${key}:${params.version}` : key,
+    locale: { value: 'en' },
   }),
 }))
 
 vi.mock('@/composables/useTheme', () => ({
-  useTheme: () => ({ isDark: false, isComic: false }),
+  useTheme: () => ({
+    isDark: false,
+    isComic: false,
+    customization: { value: { fontSize: 14, textColor: null, accentColor: null } },
+    hasBackgroundImage: false,
+    syncThemeFromServer: vi.fn().mockResolvedValue(undefined),
+  }),
 }))
 
 vi.mock('@/composables/useKeyboard', () => ({
@@ -62,6 +69,10 @@ vi.mock('@/components/auth/DefaultCredentialPrompt.vue', () => ({
 
 vi.mock('@/components/hermes/models/ProviderConfigurationPrompt.vue', () => ({
   default: { name: 'ProviderConfigurationPrompt', template: '<div />' },
+}))
+
+vi.mock('@/components/layout/GlobalPendingActions.vue', () => ({
+  default: { name: 'GlobalPendingActions', template: '<div class="global-pending-actions-test" />' },
 }))
 
 vi.mock('@/components/hermes/chat/SessionSearchModal.vue', () => ({
@@ -118,6 +129,13 @@ describe('App web pet mounting', () => {
     appStoreMock.sidebarCollapsed = false
     appStoreMock.pageSidebarExpanded = true
     delete (window as WindowWithDesktop).hermesDesktop
+  })
+
+  it('mounts the global pending-action host in the normal app shell', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+
+    expect(wrapper.findComponent({ name: 'GlobalPendingActions' }).exists()).toBe(true)
   })
 
   it('mounts the web pet in the browser web app', async () => {

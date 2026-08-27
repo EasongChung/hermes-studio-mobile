@@ -19,7 +19,7 @@ afterEach(async () => {
 })
 
 async function runBridgeProbe(script: string): Promise<any> {
-  const bridgePath = resolve('packages/server/src/services/hermes/agent-bridge/python/hermes_bridge.py')
+  const bridgePath = resolve('packages/server/src/modules/hermes/services/bridge/python/hermes_bridge.py')
   const { stdout } = await execFileAsync('python3', ['-c', script], {
     cwd: resolve('.'),
     env: {
@@ -495,7 +495,7 @@ bridge._ensure_agent_imports = lambda: None
 bridge._load_cfg = lambda: {"model": {"default": "work-model"}, "agent": {}}
 bridge._resolve_runtime = lambda model, provider=None: {"provider": "fake"}
 bridge._load_enabled_toolsets = lambda: ["mcp-anysearch"]
-bridge._load_reasoning_config = lambda: None
+bridge._load_reasoning_config = lambda *_args: None
 bridge._load_service_tier = lambda: None
 
 pool = bridge.AgentPool()
@@ -576,7 +576,7 @@ bridge._load_cfg = lambda: {"model": {"default": "fake-model"}, "agent": {}}
 bridge._resolve_runtime = lambda model, provider=None: {"provider": "fake"}
 bridge._load_enabled_toolsets = lambda: []
 bridge._discover_bridge_mcp_tools = lambda: []
-bridge._load_reasoning_config = lambda: None
+bridge._load_reasoning_config = lambda *_args: None
 bridge._load_service_tier = lambda: None
 
 pool = bridge.AgentPool()
@@ -684,7 +684,7 @@ bridge._load_cfg = lambda: {"model": {"default": "fake-model"}, "agent": {}}
 bridge._resolve_runtime = lambda model, provider=None: {"provider": "fake"}
 bridge._load_enabled_toolsets = lambda: []
 bridge._discover_bridge_mcp_tools = lambda: []
-bridge._load_reasoning_config = lambda: None
+bridge._load_reasoning_config = lambda *_args: None
 bridge._load_service_tier = lambda: None
 
 pool = bridge.AgentPool()

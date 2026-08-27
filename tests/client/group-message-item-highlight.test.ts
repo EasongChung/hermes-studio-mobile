@@ -16,14 +16,15 @@ vi.mock('naive-ui', () => ({
     warning: vi.fn(),
     info: vi.fn(),
   }),
+  NPopover: { template: '<div><slot name="trigger" /><slot /></div>' },
 }))
 
-vi.mock('@/api/hermes/download', () => ({
+vi.mock('@/api/studio/download', () => ({
   getDownloadUrl: (_path: string, name: string) => `/download/${name}`,
 }))
 
 import GroupMessageItem from '@/components/hermes/group-chat/GroupMessageItem.vue'
-import type { ChatMessage } from '@/api/hermes/group-chat'
+import type { ChatMessage } from '@/api/studio/group-chat'
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
 
 function mountToolMessage(message: Partial<ChatMessage>) {
@@ -51,6 +52,7 @@ function mountToolMessage(message: Partial<ChatMessage>) {
 
 describe('GroupMessageItem tool details', () => {
   beforeEach(() => {
+    vi.useRealTimers()
     setActivePinia(createPinia())
     Object.defineProperty(window, 'isSecureContext', {
       configurable: true,
@@ -74,6 +76,13 @@ describe('GroupMessageItem tool details', () => {
         resume: vi.fn(),
       },
     })
+  })
+
+  it('shows an explicit unavailable-result label for interrupted historical tools', () => {
+    const wrapper = mountToolMessage({ toolStatus: 'interrupted' })
+
+    expect(wrapper.find('.tool-spinner').exists()).toBe(false)
+    expect(wrapper.get('.tool-interrupted-badge').text()).toBe('chat.toolResultUnavailable')
   })
 
   it('selects a group message as the active room reference', async () => {
@@ -106,6 +115,68 @@ describe('GroupMessageItem tool details', () => {
     })
   })
 
+  it('keeps streaming Agent reasoning collapsed until the user expands it', async () => {
+    const wrapper = mount(GroupMessageItem, {
+      props: {
+        message: {
+          id: 'group-thinking',
+          roomId: 'room-1',
+          senderId: 'agent-1',
+          senderName: 'Worker',
+          role: 'assistant',
+          content: '',
+          reasoning: 'Inspecting several possible approaches.',
+          isStreaming: true,
+          timestamp: Date.now(),
+        },
+        agents: [{ id: 'agent-row', roomId: 'room-1', agentId: 'agent-1', profile: 'worker', name: 'Worker', description: '', invited: 1 }],
+        members: [],
+        currentUserId: 'user-1',
+      },
+      global: { stubs: { MarkdownRenderer: true, ProfileAvatar: true } },
+    })
+
+    expect(wrapper.find('.thinking-body').exists()).toBe(false)
+    expect(wrapper.get('.thinking-label').text()).toBe('chat.thinkingInProgress')
+    await wrapper.get('.thinking-header').trigger('click')
+    expect(wrapper.get('.thinking-body markdown-renderer-stub').attributes('content'))
+      .toBe('Inspecting several possible approaches.')
+  })
+
+  it('throttles streaming body Markdown and commits the final body immediately', async () => {
+    vi.useFakeTimers()
+    const baseMessage: ChatMessage = {
+      id: 'group-streaming-body',
+      roomId: 'room-1',
+      senderId: 'agent-1',
+      senderName: 'Worker',
+      role: 'assistant',
+      content: 'A',
+      isStreaming: true,
+      timestamp: Date.now(),
+    }
+    const wrapper = mount(GroupMessageItem, {
+      props: {
+        message: baseMessage,
+        agents: [],
+        members: [],
+        currentUserId: 'user-1',
+      },
+      global: { stubs: { MarkdownRenderer: true, ProfileAvatar: true } },
+    })
+
+    expect(wrapper.get('.msg-content markdown-renderer-stub').attributes('content')).toBe('A')
+    await wrapper.setProps({ message: { ...baseMessage, content: 'AB' } })
+    expect(wrapper.get('.msg-content markdown-renderer-stub').attributes('content')).toBe('A')
+
+    await vi.advanceTimersByTimeAsync(100)
+    expect(wrapper.get('.msg-content markdown-renderer-stub').attributes('content')).toBe('AB')
+
+    await wrapper.setProps({ message: { ...baseMessage, content: 'ABC', isStreaming: false } })
+    expect(wrapper.get('.msg-content markdown-renderer-stub').attributes('content')).toBe('ABC')
+    wrapper.unmount()
+  })
+
   it('normalizes non-string runtime tool payloads before rendering', async () => {
     const wrapper = mountToolMessage({
       toolArgs: { group: true, values: [1, 2, 3] },
@@ -122,6 +193,26 @@ describe('GroupMessageItem tool details', () => {
     expect(blocks[1].find('code').text()).toBe('false')
   })
 
+  it('adds the tool-call reasoning as the first expanded detail section', async () => {
+    const wrapper = mountToolMessage({
+      reasoning: 'I should inspect the group context first.',
+      toolArgs: { room: 'room-1' },
+      toolResult: 'done',
+    })
+
+    await wrapper.find('.tool-line').trigger('click')
+
+    const sections = wrapper.findAll('.tool-details .tool-detail-section')
+    expect(sections).toHaveLength(3)
+    expect(sections.map(section => section.find('.tool-detail-label').text())).toEqual([
+      'chat.thinkingLabel',
+      'chat.arguments',
+      'chat.result',
+    ])
+    expect(wrapper.get('.tool-detail-reasoning markdown-renderer-stub').attributes('content'))
+      .toBe('I should inspect the group context first.')
+  })
+
   it('keeps plain string false payloads as text', async () => {
     const wrapper = mountToolMessage({
       toolResult: 'false',
@@ -133,5 +224,57 @@ describe('GroupMessageItem tool details', () => {
     expect(block.exists()).toBe(true)
     expect(block.find('.code-lang').text()).toBe('text')
     expect(block.find('code').text()).toBe('false')
+  })
+
+  it('uses the compact single-chat identity layout for an Agent message', () => {
+    const wrapper = mount(GroupMessageItem, {
+      props: {
+        message: {
+          id: 'group-agent-identity',
+          roomId: 'room-1',
+          senderId: 'agent-1',
+          senderName: 'Worker',
+          role: 'assistant',
+          content: 'Hello',
+          timestamp: Date.now(),
+        },
+        agents: [{ id: 'agent-row', roomId: 'room-1', agentId: 'agent-1', profile: 'worker', name: 'Worker', description: '', invited: 1 }],
+        members: [],
+        currentUserId: 'user-1',
+      },
+      global: { stubs: { MarkdownRenderer: true, ProfileAvatar: true } },
+    })
+
+    const header = wrapper.get('.msg-header')
+    expect(header.get('.sender-name').text()).toBe('Worker')
+    expect(header.get('.message-agent-avatar').attributes('style')).toContain('width: 22px')
+    expect(header.get('.message-agent-avatar').classes()).toContain('message-agent-avatar--compact')
+    expect(wrapper.find('.avatar').exists()).toBe(false)
+  })
+
+  it('uses the compact mirrored identity layout for the current user', () => {
+    const wrapper = mount(GroupMessageItem, {
+      props: {
+        message: {
+          id: 'group-user-identity',
+          roomId: 'room-1',
+          senderId: 'user-1',
+          senderName: 'Researcher',
+          role: 'user',
+          content: 'Hello',
+          timestamp: Date.now(),
+        },
+        agents: [],
+        members: [{ userId: 'user-1', name: 'Researcher', avatar: '' }],
+        currentUserId: 'user-1',
+      },
+      global: { stubs: { MarkdownRenderer: true, ProfileAvatar: true } },
+    })
+
+    const header = wrapper.get('.msg-header')
+    expect(header.get('.sender-name').text()).toBe('Researcher')
+    const userAvatar = header.get('.profile-avatar-view, profile-avatar-stub')
+    expect(`${userAvatar.attributes('style') || ''} ${userAvatar.attributes('size') || ''}`).toContain('22')
+    expect(wrapper.get('.group-message').classes()).toContain('self')
   })
 })

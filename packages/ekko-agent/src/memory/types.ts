@@ -14,12 +14,18 @@ export const MEMORY_KINDS = [
   'profile_name',
   'home_location',
   'occupation',
+  'timezone_preference',
   'language_preference',
   'accessibility_need',
   'communication_preference',
+  'general_preference',
   'workflow_preference',
+  'tool_preference',
+  'personal_relationship',
+  'habit_routine',
   'environment_fact',
   'project_context',
+  'long_term_goal',
   'durable_decision',
   'hard_constraint',
   'food_avoidance',
@@ -99,13 +105,26 @@ export interface MemoryQuery {
   domain?: string
   categoryPathPrefix?: string[]
   types?: MemoryNodeType[]
+  kinds?: MemoryKind[]
   key?: string
   valueJson?: unknown
   tags?: string[]
   entities?: string[]
   queryText?: string
   includeExpired?: boolean
+  statuses?: MemoryNodeStatus[]
   limit?: number
+  offset?: number
+}
+
+export interface MemoryAuditQuery {
+  profileId?: string
+  nodeId?: string
+  sessionId?: string
+  eventTypes?: MemoryAuditEvent['eventType'][]
+  actor?: string
+  limit?: number
+  offset?: number
 }
 
 export type MemoryOmissionReason =
@@ -127,6 +146,8 @@ export interface MemoryContextDiagnostics {
   warnings: string[]
   retrievedNodeCount: number
   omittedNodeCount: number
+  tokenBudget?: number
+  usedTokens?: number
 }
 
 export interface MemoryContext {
@@ -202,6 +223,45 @@ export interface MemoryProposeUpdateResult {
   reason?: string
 }
 
+export interface MemoryCreateInput {
+  kind: MemoryKind
+  itemKey?: string
+  node: Partial<MemoryNode>
+  reason: string
+  actor?: string
+  explicitUserIntent?: boolean
+  identity?: Partial<MemoryRuntimeIdentity>
+}
+
+export interface MemoryUpdateInput {
+  node?: Partial<MemoryNode>
+  valuePatch?: Record<string, unknown>
+  unsetValueFields?: string[]
+  reason: string
+  actor?: string
+  expectedRevision: number
+  explicitUserIntent?: boolean
+  identity?: Partial<MemoryRuntimeIdentity>
+}
+
+export interface MemoryExpireInput {
+  reason: string
+  actor?: string
+  expectedRevision: number
+  identity?: Partial<MemoryRuntimeIdentity>
+}
+
+export interface MemoryDeleteInput extends MemoryExpireInput {
+  mode?: 'soft' | 'hard'
+  confirmed?: boolean
+}
+
+export interface MemoryMessageListInput {
+  sessionId: string
+  afterMessageId?: string
+  limit?: number
+}
+
 export interface MemoryForgetInput {
   id?: string
   expectedRevision?: number
@@ -245,6 +305,7 @@ export interface MemoryStore {
   deleteNode(input: { nodeId: string; mode: 'soft' | 'hard'; reason: string; actor: string; expectedRevision?: number; sessionId?: string }): Promise<boolean>
   queryNodes(query: MemoryQuery): Promise<MemoryNode[]>
   appendAuditEvent(event: MemoryAuditEvent): Promise<void>
+  listAuditEvents(query?: MemoryAuditQuery): Promise<MemoryAuditEvent[]>
   getSessionState(sessionId: string): Promise<MemorySessionState | undefined>
   setSessionState(state: MemorySessionState): Promise<void>
   close(): void

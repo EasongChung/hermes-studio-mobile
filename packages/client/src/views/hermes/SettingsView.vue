@@ -10,16 +10,13 @@ import { useI18n } from "vue-i18n";
 import { useSettingsStore } from "@/stores/hermes/settings";
 import DisplaySettings from "@/components/hermes/settings/DisplaySettings.vue";
 import AgentSettings from "@/components/hermes/settings/AgentSettings.vue";
-import GatewayAutoStartSettings from "@/components/hermes/settings/GatewayAutoStartSettings.vue";
 import ProxySettings from "@/components/hermes/settings/ProxySettings.vue";
-import MemorySettings from "@/components/hermes/settings/MemorySettings.vue";
 import CompressionSettings from "@/components/hermes/settings/CompressionSettings.vue";
-import SessionSettings from "@/components/hermes/settings/SessionSettings.vue";
 import PrivacySettings from "@/components/hermes/settings/PrivacySettings.vue";
 import ModelSettings from "@/components/hermes/settings/ModelSettings.vue";
 import AccountSettings from "@/components/hermes/settings/AccountSettings.vue";
 import UserManagementSettings from "@/components/hermes/settings/UserManagementSettings.vue";
-import VoiceSettings from "@/components/hermes/settings/VoiceSettings.vue";
+import WebhookSettings from "@/components/hermes/settings/WebhookSettings.vue";
 import { isStoredSuperAdmin } from "@/api/client";
 import { useProfilesStore } from "@/stores/hermes/profiles";
 
@@ -34,15 +31,13 @@ const activeTab = ref("account");
 const validTabs = computed(() => new Set([
   "account",
   ...(canManageUsers ? ["users"] : []),
+  ...(canManageUsers ? ["webhooks"] : []),
   "display",
   "proxy",
   "agent",
-  "memory",
   "compression",
-  "session",
   "privacy",
   "models",
-  "voice",
 ]));
 
 function normalizeTab(value: unknown): string {
@@ -61,6 +56,26 @@ function handleTabUpdate(tab: string) {
 }
 
 watch(() => route.query.tab, (tab) => {
+  if (tab === "memory" || tab === "session" || tab === "gateway") {
+    void router.replace({
+      name: "hermes.configSettings",
+      query: {
+        ...route.query,
+        tab: tab === "gateway" ? undefined : tab,
+      },
+    });
+    return;
+  }
+  if (tab === "voice") {
+    void router.replace({
+      name: "hermes.models",
+      query: {
+        ...route.query,
+        tab: "tts",
+      },
+    });
+    return;
+  }
   activeTab.value = normalizeTab(tab);
 }, { immediate: true });
 
@@ -95,6 +110,9 @@ onMounted(() => {
           <NTabPane v-if="canManageUsers" name="users" :tab="t('settings.tabs.users')">
             <UserManagementSettings />
           </NTabPane>
+          <NTabPane v-if="canManageUsers" name="webhooks" :tab="t('settings.tabs.webhooks')">
+            <WebhookSettings />
+          </NTabPane>
           <NTabPane name="display" :tab="t('settings.tabs.display')">
             <DisplaySettings />
           </NTabPane>
@@ -103,25 +121,15 @@ onMounted(() => {
           </NTabPane>
           <NTabPane name="agent" :tab="t('settings.tabs.agent')">
             <AgentSettings />
-            <GatewayAutoStartSettings />
-          </NTabPane>
-          <NTabPane name="memory" :tab="t('settings.tabs.memory')">
-            <MemorySettings />
           </NTabPane>
           <NTabPane name="compression" :tab="t('settings.tabs.compression')">
             <CompressionSettings />
-          </NTabPane>
-          <NTabPane name="session" :tab="t('settings.tabs.session')">
-            <SessionSettings />
           </NTabPane>
           <NTabPane name="privacy" :tab="t('settings.tabs.privacy')">
             <PrivacySettings />
           </NTabPane>
           <NTabPane name="models" :tab="t('settings.tabs.models')">
             <ModelSettings />
-          </NTabPane>
-          <NTabPane name="voice" :tab="t('settings.tabs.voice')">
-            <VoiceSettings />
           </NTabPane>
         </NTabs>
       </NSpin>

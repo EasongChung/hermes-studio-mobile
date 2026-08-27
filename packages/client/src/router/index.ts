@@ -1,6 +1,7 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import { hasApiKey, isStoredSuperAdmin } from '@/api/client'
 import { hasDesktopBrowserBridge } from '@/utils/desktop-bridge'
+import { resolveLoginRedirect } from '@/utils/login-redirect'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -16,6 +17,18 @@ const router = createRouter({
       name: 'login',
       component: () => import('@/views/LoginView.vue'),
       meta: { public: true },
+    },
+    {
+      path: '/share/group-chat/:inviteCode?',
+      name: 'share.groupChat',
+      component: () => import('@/views/hermes/SharedGroupChatView.vue'),
+      meta: { public: true, standaloneChat: true, inviteOnly: true },
+    },
+    {
+      path: '/group-chat-link',
+      name: 'groupChat.link',
+      component: () => import('@/views/hermes/GroupChatLinkView.vue'),
+      meta: { standaloneChat: true },
     },
     {
       path: '/hermes/chat',
@@ -57,11 +70,13 @@ const router = createRouter({
       path: '/hermes/jobs',
       name: 'hermes.jobs',
       component: () => import('@/views/hermes/JobsView.vue'),
+      meta: { hermesConfig: true },
     },
     {
       path: '/hermes/kanban',
       name: 'hermes.kanban',
       component: () => import('@/views/hermes/KanbanView.vue'),
+      meta: { hermesConfig: true },
     },
     {
       path: '/hermes/workflow',
@@ -71,7 +86,7 @@ const router = createRouter({
     {
       path: '/hermes/models',
       name: 'hermes.models',
-      component: () => import('@/views/hermes/ModelsView.vue'),
+      component: () => import('@/views/hermes/ChatView.vue'),
     },
     {
       path: '/hermes/profiles',
@@ -99,6 +114,7 @@ const router = createRouter({
       path: '/hermes/journey',
       name: 'hermes.journey',
       component: () => import('@/views/hermes/JourneyView.vue'),
+      meta: { hermesConfig: true },
     },
     {
       path: '/hermes/skills-usage',
@@ -109,11 +125,13 @@ const router = createRouter({
       path: '/hermes/skills',
       name: 'hermes.skills',
       component: () => import('@/views/hermes/SkillsView.vue'),
+      meta: { hermesConfig: true },
     },
     {
       path: '/hermes/plugins',
       name: 'hermes.plugins',
       component: () => import('@/views/hermes/PluginsView.vue'),
+      meta: { hermesConfig: true },
     },
     {
       path: '/hermes/petdex',
@@ -124,6 +142,13 @@ const router = createRouter({
       path: '/hermes/memory',
       name: 'hermes.memory',
       component: () => import('@/views/hermes/MemoryView.vue'),
+      meta: { hermesConfig: true },
+    },
+    {
+      path: '/hermes/config/settings',
+      name: 'hermes.configSettings',
+      component: () => import('@/views/hermes/HermesSettingsView.vue'),
+      meta: { hermesConfig: true },
     },
     {
       path: '/hermes/settings',
@@ -131,9 +156,22 @@ const router = createRouter({
       component: () => import('@/views/hermes/SettingsView.vue'),
     },
     {
+      path: '/hermes/theme',
+      name: 'hermes.theme',
+      component: () => import('@/views/hermes/ThemeView.vue'),
+    },
+    {
       path: '/hermes/channels',
       name: 'hermes.channels',
       component: () => import('@/views/hermes/ChannelsView.vue'),
+      meta: { hermesConfig: true },
+    },
+    {
+      path: '/social-messages',
+      redirect: {
+        name: 'hermes.connections',
+        query: { view: 'messages' },
+      },
     },
     {
       path: '/hermes/terminal',
@@ -142,10 +180,28 @@ const router = createRouter({
       meta: { requiresSuperAdmin: true },
     },
     {
+      path: '/hermes/connections',
+      name: 'hermes.connections',
+      component: () => import('@/views/hermes/ChatView.vue'),
+    },
+    {
       path: '/hermes/devices',
       name: 'hermes.devices',
-      component: () => import('@/views/hermes/DevicesView.vue'),
+      redirect: to => ({
+        name: 'hermes.connections',
+        query: { ...to.query, tab: 'devices' },
+      }),
       meta: { requiresSuperAdmin: true },
+    },
+    {
+      path: '/studio/agents',
+      name: 'hermes.agentManager',
+      component: () => import('@/views/hermes/ChatView.vue'),
+      meta: { requiresSuperAdmin: true },
+    },
+    {
+      path: '/hermes/agents',
+      redirect: { name: 'hermes.agentManager' },
     },
     {
       path: '/hermes/group-chat',
@@ -158,14 +214,27 @@ const router = createRouter({
       component: () => import('@/views/hermes/GroupChatView.vue'),
     },
     {
+      path: '/hermes/history/group-chat/:roomId',
+      redirect: to => ({
+        name: 'hermes.groupChatRoom',
+        params: { roomId: to.params.roomId },
+      }),
+    },
+    {
+      path: '/hermes/group-chat/history/:roomId',
+      redirect: to => ({
+        name: 'hermes.groupChatRoom',
+        params: { roomId: to.params.roomId },
+      }),
+    },
+    {
       path: '/hermes/files',
       name: 'hermes.files',
       component: () => import('@/views/hermes/FilesView.vue'),
     },
     {
       path: '/hermes/coding-agents',
-      name: 'hermes.codingAgents',
-      component: () => import('@/views/hermes/CodingAgentsView.vue'),
+      redirect: { name: 'hermes.agentManager' },
     },
     {
       path: '/hermes/version-preview',
@@ -177,6 +246,7 @@ const router = createRouter({
       path: '/hermes/mcp',
       name: 'hermes.mcp',
       component: () => import('@/views/hermes/McpManagerView.vue'),
+      meta: { hermesConfig: true },
     },
   ],
 })
@@ -214,7 +284,7 @@ router.beforeEach(async (to, _from, next) => {
   if (to.meta.public) {
     // Already has key, skip login
     if (to.name === 'login' && hasApiKey() && !isDesktopShell()) {
-      next({ path: '/hermes/chat' })
+      next(resolveLoginRedirect(to.query.redirect))
       return
     }
     next()
@@ -223,7 +293,7 @@ router.beforeEach(async (to, _from, next) => {
 
   // All other pages require token
   if (!hasApiKey()) {
-    next({ name: 'login' })
+    next({ name: 'login', query: { redirect: to.fullPath } })
     return
   }
 

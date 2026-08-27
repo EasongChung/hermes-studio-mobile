@@ -9,10 +9,19 @@ export interface TerminalExecInput extends Record<string, unknown> {
   timeoutMs?: number
 }
 
+export interface TerminalExecToolOptions {
+  timeoutMs?: number
+}
+
 export class TerminalExecTool implements AgentTool<TerminalExecInput> {
   readonly definition = {
     name: 'terminal_exec',
-    description: 'Run a terminal command. Prefer command as the executable and args as the argument array; shell string execution is not used.',
+    description: [
+      'Run a CLI command, project script, test, build, package manager, or system executable.',
+      'Prefer command as the executable and args as the argument array; shell string execution is not used.',
+      'When the user asks to execute or evaluate Node.js, JavaScript, or Python source code, use code_exec instead, even for a one-line snippet.',
+      'Destructive, privileged, remote-shell, publishing, and other dangerous commands require runtime authorization before execution.',
+    ].join(' '),
     parameters: {
       type: 'object',
       properties: {
@@ -26,11 +35,17 @@ export class TerminalExecTool implements AgentTool<TerminalExecInput> {
     },
   }
 
+  private readonly timeoutMs: number
+
+  constructor(options: TerminalExecToolOptions = {}) {
+    this.timeoutMs = positiveInteger(options.timeoutMs, 30_000)
+  }
+
   async execute(input: TerminalExecInput, context: AgentToolContext = {}): Promise<AgentToolResult> {
     const normalized = normalizeTerminalCommand(input.command, input.args)
     const args = normalized.args
     const cwd = input.cwd ? resolveToolPath(input.cwd, context) : context.cwd || context.workspaceRoot || process.cwd()
-    const timeoutMs = input.timeoutMs ?? context.timeoutMs ?? 30_000
+    const timeoutMs = input.timeoutMs ?? context.timeoutMs ?? this.timeoutMs
     if (context.signal?.aborted) {
       return {
         ok: false,
@@ -100,8 +115,12 @@ export class TerminalExecTool implements AgentTool<TerminalExecInput> {
   }
 }
 
-export function createTerminalTools(): AgentTool[] {
-  return [new TerminalExecTool()]
+export function createTerminalTools(options: TerminalExecToolOptions = {}): AgentTool[] {
+  return [new TerminalExecTool(options)]
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) && Number(value) > 0 ? Math.floor(Number(value)) : fallback
 }
 
 function normalizeTerminalCommand(command: string, args?: string[]): { command: string; args: string[] } {

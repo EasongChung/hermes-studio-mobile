@@ -7,18 +7,42 @@ import AuxiliaryModelsPanel from '@/components/hermes/models/AuxiliaryModelsPane
 import CombinationModelsPanel from '@/components/hermes/models/CombinationModelsPanel.vue'
 import ProvidersPanel from '@/components/hermes/models/ProvidersPanel.vue'
 import ProviderFormModal from '@/components/hermes/models/ProviderFormModal.vue'
+import VoiceSettings from '@/components/hermes/settings/VoiceSettings.vue'
 import { useModelsStore } from '@/stores/hermes/models'
+import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { checkCopilotToken } from '@/api/hermes/copilot-auth'
 
 const { t } = useI18n()
+const props = defineProps<{ sidebarCollapsed?: boolean }>()
+const emit = defineEmits<{ toggleSidebar: [] }>()
 const modelsStore = useModelsStore()
+const appStore = useAppStore()
 const profilesStore = useProfilesStore()
 const message = useMessage()
 const route = useRoute()
 const router = useRouter()
 const showModal = ref(false)
-const activeTab = ref<'general' | 'auxiliary' | 'combination'>('general')
+type ModelsTab = 'general' | 'auxiliary' | 'combination' | 'stt' | 'tts'
+
+const MODELS_TABS = new Set<ModelsTab>(['general', 'auxiliary', 'combination', 'stt', 'tts'])
+const activeTab = ref<ModelsTab>('general')
+
+function normalizeTab(value: unknown): ModelsTab {
+  const tab = typeof value === 'string' ? value : ''
+  if (tab === 'fallback') return 'auxiliary'
+  return MODELS_TABS.has(tab as ModelsTab) ? tab as ModelsTab : 'general'
+}
+
+function handleTabUpdate(tab: ModelsTab) {
+  activeTab.value = normalizeTab(tab)
+  void router.replace({
+    query: {
+      ...route.query,
+      tab: activeTab.value === 'general' ? undefined : activeTab.value,
+    },
+  })
+}
 
 async function loadProvidersForProfile() {
   if (!profilesStore.activeProfileName || profilesStore.profiles.length === 0) {
@@ -44,15 +68,31 @@ watch(() => route.query.addProvider, (addProvider) => {
   showModal.value = true
   const query = { ...route.query }
   delete query.addProvider
+  delete query.tab
   void router.replace({ query })
+}, { immediate: true })
+
+watch(() => route.query.tab, (tab) => {
+  if (route.query.addProvider === '1') return
+  activeTab.value = normalizeTab(tab)
+  if (tab === 'fallback') {
+    void router.replace({
+      query: { ...route.query, tab: 'auxiliary' },
+    })
+  }
 }, { immediate: true })
 
 function handleModalClose() {
   showModal.value = false
 }
 
-async function handleSaved() {
-  await modelsStore.fetchProviders()
+async function handleSaved(globalModelsAlreadyRefreshed = false) {
+  if (!globalModelsAlreadyRefreshed) {
+    await Promise.all([
+      modelsStore.fetchProviders(),
+      appStore.reloadModels({ preserveSelection: true }),
+    ])
+  }
   handleModalClose()
 }
 
@@ -73,7 +113,27 @@ async function handleRefreshModelCache() {
     </div>
 
     <header class="page-header">
-      <h2 class="header-title">{{ t('models.title') }}</h2>
+      <div class="models-header-left">
+        <NButton
+          class="models-sidebar-toggle"
+          quaternary
+          size="small"
+          circle
+          :title="props.sidebarCollapsed ? t('sidebar.expand') : t('sidebar.collapse')"
+          :aria-label="props.sidebarCollapsed ? t('sidebar.expand') : t('sidebar.collapse')"
+          @click="emit('toggleSidebar')"
+        >
+          <template #icon>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+              <rect x="3" y="3" width="7" height="7" />
+              <rect x="14" y="3" width="7" height="7" />
+              <rect x="3" y="14" width="7" height="7" />
+              <rect x="14" y="14" width="7" height="7" />
+            </svg>
+          </template>
+        </NButton>
+        <h2 class="header-title">{{ t('models.title') }}</h2>
+      </div>
       <div v-if="activeTab === 'general'" class="header-actions">
         <NButton
           size="small"
@@ -104,7 +164,7 @@ async function handleRefreshModelCache() {
     </header>
 
     <div class="models-content">
-      <NTabs v-model:value="activeTab" type="line" animated>
+      <NTabs v-model:value="activeTab" type="line" animated @update:value="handleTabUpdate">
         <NTabPane name="general" :tab="t('models.generalTitle')">
           <NSpin :show="modelsStore.loading && modelsStore.providers.length === 0">
             <ProvidersPanel />
@@ -115,6 +175,12 @@ async function handleRefreshModelCache() {
         </NTabPane>
         <NTabPane name="combination" :tab="t('models.combinationTitle')">
           <CombinationModelsPanel />
+        </NTabPane>
+        <NTabPane name="stt" :tab="t('settings.voice.sttProvidersTitle')">
+          <VoiceSettings :key="`stt-${profilesStore.activeProfileName || 'default'}`" kind="stt" />
+        </NTabPane>
+        <NTabPane name="tts" :tab="t('settings.voice.ttsProvidersTitle')">
+          <VoiceSettings :key="`tts-${profilesStore.activeProfileName || 'default'}`" kind="tts" />
         </NTabPane>
       </NTabs>
     </div>
@@ -131,9 +197,17 @@ async function handleRefreshModelCache() {
 @use '@/styles/variables' as *;
 
 .models-view {
-  height: calc(100 * var(--vh));
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+.models-header-left {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .model-cache-overlay {

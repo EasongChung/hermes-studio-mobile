@@ -11,7 +11,7 @@ const chatApi = vi.hoisted(() => ({
   socketEmit: vi.fn(),
 }))
 
-vi.mock('@/api/hermes/chat', () => ({
+vi.mock('@/api/studio/chat', () => ({
   startRunViaSocket: chatApi.startRunViaSocket,
   resumeSession: chatApi.resumeSession,
   registerSessionHandlers: chatApi.registerSessionHandlers,
@@ -23,6 +23,7 @@ vi.mock('@/api/hermes/chat', () => ({
   onSessionCommand: vi.fn(() => vi.fn()),
   onSessionTitleUpdated: vi.fn(() => vi.fn()),
   onSessionWorkspaceUpdated: vi.fn(() => vi.fn()),
+  onSessionSettingsUpdated: vi.fn(() => vi.fn()),
 }))
 
 vi.mock('@/api/client', () => ({
@@ -30,7 +31,7 @@ vi.mock('@/api/client', () => ({
   hasApiKey: () => false,
 }))
 
-vi.mock('@/api/hermes/sessions', () => ({
+vi.mock('@/api/studio/sessions', () => ({
   archiveSession: vi.fn(),
   deleteSession: vi.fn(),
   fetchSession: vi.fn(),
@@ -40,7 +41,7 @@ vi.mock('@/api/hermes/sessions', () => ({
   setSessionModel: vi.fn(),
 }))
 
-vi.mock('@/api/hermes/download', () => ({
+vi.mock('@/api/studio/download', () => ({
   getDownloadUrl: (_path: string, name: string) => `/download/${name}`,
 }))
 
@@ -371,7 +372,22 @@ describe('chat store compression state', () => {
           content: JSON.stringify({ mode: 'background', delegation_id: 'delegation-1' }),
           tool_call_id: 'delegate-call-1',
           tool_name: 'delegate_task',
-          timestamp: Date.now() / 1000,
+          timestamp: 102,
+        }, {
+          id: 'parent-acknowledgement',
+          role: 'assistant',
+          content: 'The background task is running.',
+          timestamp: 103,
+        }, {
+          id: 'later-user-message',
+          role: 'user',
+          content: 'Continue with another question.',
+          timestamp: 200,
+        }, {
+          id: 'later-assistant-message',
+          role: 'assistant',
+          content: 'Here is the later answer.',
+          timestamp: 201,
         }],
         events: [],
         backgroundPending: 1,
@@ -383,6 +399,8 @@ describe('chat store compression state', () => {
           task_count: 1,
           goal: 'Inspect the task',
           preview: 'Recovered live output',
+          started_at: 101.5,
+          updated_at: 202,
         }],
       })
       return {} as any
@@ -396,6 +414,317 @@ describe('chat store compression state', () => {
     expect(delegateCards).toHaveLength(1)
     expect(delegateCards[0]?.toolCallId).toBe('subagent:child-1')
     expect(store.getSubagentStream('session-1', 'child-1')?.entries.some(entry => entry.text === 'Recovered live output')).toBe(true)
+    expect(store.messages.map(message => message.toolCallId || message.content)).toEqual([
+      'subagent:child-1',
+      'The background task is running.',
+      'Continue with another question.',
+      'Here is the later answer.',
+    ])
+  })
+
+  it('restores a completed Ekko background card at its original turn instead of the transcript tail', async () => {
+    chatApi.resumeSession.mockImplementationOnce((sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({
+        session_id: sessionId,
+        isWorking: false,
+        messages: [{
+          id: 1,
+          role: 'user',
+          content: 'Start background work',
+          timestamp: 100,
+        }, {
+          id: 2,
+          role: 'assistant',
+          content: '',
+          timestamp: 101,
+          tool_calls: [{
+            id: 'delegate-call-1',
+            function: {
+              name: 'delegate_task',
+              arguments: JSON.stringify({ mode: 'background', goal: 'Inspect the task' }),
+            },
+          }],
+        }, {
+          id: 3,
+          role: 'tool',
+          content: JSON.stringify({
+            runtime: 'ekko',
+            mode: 'background',
+            subagent_id: 'child-1',
+            status: 'running',
+            goal: 'Inspect the task',
+          }),
+          display_content: JSON.stringify({
+            runtime: 'ekko',
+            mode: 'background',
+            subagent_id: 'child-1',
+            status: 'completed',
+            goal: 'Inspect the task',
+            summary: 'Inspection passed.',
+          }),
+          tool_call_id: 'delegate-call-1',
+          tool_name: 'delegate_task',
+          timestamp: 101,
+        }, {
+          id: 4,
+          role: 'assistant',
+          content: 'The task is running.',
+          timestamp: 102,
+        }, {
+          id: 5,
+          role: 'user',
+          content: 'Continue chatting',
+          timestamp: 103,
+        }, {
+          id: 6,
+          role: 'assistant',
+          content: 'Continued.',
+          timestamp: 104,
+        }],
+        events: [],
+        backgroundTasks: [],
+      })
+      return {} as any
+    })
+
+    const store = useChatStore()
+    store.sessions = [makeSession('session-1')]
+    await store.switchSession('session-1')
+
+    expect(store.messages.map(message => message.toolCallId || message.content)).toEqual([
+      'Start background work',
+      'subagent:child-1',
+      'The task is running.',
+      'Continue chatting',
+      'Continued.',
+    ])
+    expect(store.messages[1]).toEqual(expect.objectContaining({
+      toolStatus: 'done',
+      toolPreview: expect.stringContaining('Inspection passed.'),
+    }))
+    expect(store.getSubagentStream('session-1', 'child-1')).toEqual(expect.objectContaining({
+      status: 'completed',
+      summary: 'Inspection passed.',
+    }))
+  })
+
+  it('restores a completed Ekko foreground subtask as a clickable child stream', async () => {
+    chatApi.resumeSession.mockImplementationOnce((sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({
+        session_id: sessionId,
+        isWorking: false,
+        messages: [{
+          id: 1,
+          role: 'user',
+          content: 'Run a foreground subtask',
+          timestamp: 100,
+        }, {
+          id: 2,
+          role: 'assistant',
+          content: '',
+          timestamp: 101,
+          tool_calls: [{
+            id: 'delegate-call-1',
+            function: {
+              name: 'delegate_task',
+              arguments: JSON.stringify({ mode: 'foreground', goal: 'Inspect the foreground task' }),
+            },
+          }],
+        }, {
+          id: 3,
+          role: 'tool',
+          content: JSON.stringify({
+            runtime: 'ekko',
+            mode: 'foreground',
+            subagent_id: 'foreground-child',
+            status: 'completed',
+            summary: 'Inspection completed.',
+            output: 'Full foreground inspection result.',
+            duration_ms: 1250,
+          }),
+          tool_call_id: 'delegate-call-1',
+          tool_name: 'delegate_task',
+          timestamp: 101,
+        }, {
+          id: 4,
+          role: 'assistant',
+          content: 'Parent response.',
+          timestamp: 102,
+        }],
+        events: [],
+        backgroundTasks: [],
+      })
+      return {} as any
+    })
+
+    const store = useChatStore()
+    store.sessions = [makeSession('session-1')]
+    await store.switchSession('session-1')
+
+    expect(store.messages.map(message => message.toolCallId || message.content)).toEqual([
+      'Run a foreground subtask',
+      'subagent:foreground-child',
+      'Parent response.',
+    ])
+    expect(store.messages[1]).toEqual(expect.objectContaining({
+      toolStatus: 'done',
+      toolPreview: expect.stringContaining('Full foreground inspection result.'),
+    }))
+    expect(store.getSubagentStream('session-1', 'foreground-child')).toEqual(expect.objectContaining({
+      status: 'completed',
+      goal: 'Inspect the foreground task',
+      durationSeconds: 1.25,
+    }))
+    expect(store.getSubagentStream('session-1', 'foreground-child')?.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'text', text: 'Full foreground inspection result.' }),
+      ]),
+    )
+  })
+
+  it('keeps only the clickable child card for a live Ekko foreground subtask', async () => {
+    const store = useChatStore()
+    store.sessions = [{
+      ...makeSession('session-1'),
+      agent: 'ekko-agent',
+      codingAgentId: 'ekko-agent',
+    }]
+    await store.switchSession('session-1')
+
+    handlers.onToolStarted({
+      event: 'tool.started',
+      session_id: 'session-1',
+      tool: 'delegate_task',
+      tool_call_id: 'delegate-call-1',
+      arguments: { mode: 'foreground', goal: 'Inspect live work' },
+    })
+    handlers.onSubagentEvent({
+      event: 'subagent.start',
+      session_id: 'session-1',
+      subagent_id: 'foreground-child',
+      goal: 'Inspect live work',
+      background: false,
+    })
+    handlers.onSubagentEvent({
+      event: 'subagent.complete',
+      session_id: 'session-1',
+      subagent_id: 'foreground-child',
+      goal: 'Inspect live work',
+      background: false,
+      status: 'completed',
+      summary: 'Live inspection completed.',
+    })
+    handlers.onToolCompleted({
+      event: 'tool.completed',
+      session_id: 'session-1',
+      tool: 'delegate_task',
+      tool_call_id: 'delegate-call-1',
+      output: {
+        runtime: 'ekko',
+        mode: 'foreground',
+        subagent_id: 'foreground-child',
+        status: 'completed',
+      },
+    })
+
+    expect(store.messages.filter(message => message.toolName === 'delegate_task')).toEqual([
+      expect.objectContaining({
+        toolCallId: 'subagent:foreground-child',
+        toolStatus: 'done',
+      }),
+    ])
+  })
+
+  it('keeps persisted Hermes background dispatch rows on the existing recovery path', async () => {
+    chatApi.resumeSession.mockImplementationOnce((sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({
+        session_id: sessionId,
+        isWorking: false,
+        messages: [{
+          id: 1,
+          role: 'tool',
+          content: JSON.stringify({
+            mode: 'background',
+            subagent_id: 'hermes-child',
+            status: 'running',
+          }),
+          tool_call_id: 'delegate-call-1',
+          tool_name: 'delegate_task',
+          timestamp: 100,
+        }],
+        events: [],
+        backgroundTasks: [],
+      })
+      return {} as any
+    })
+
+    const store = useChatStore()
+    store.sessions = [makeSession('session-1')]
+    await store.switchSession('session-1')
+
+    expect(store.messages.filter(message => message.toolCallId?.startsWith('subagent:'))).toHaveLength(0)
+    expect(store.messages).toEqual([
+      expect.objectContaining({
+        role: 'tool',
+        toolName: 'delegate_task',
+        toolCallId: expect.stringMatching(/^background-delegate:delegate-call-1:/),
+        toolStatus: 'done',
+      }),
+    ])
+  })
+
+  it('restores a persisted Hermes background result as a clickable child stream', async () => {
+    chatApi.resumeSession.mockImplementationOnce((sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({
+        session_id: sessionId,
+        isWorking: false,
+        messages: [{
+          id: 1,
+          role: 'tool',
+          content: JSON.stringify({
+            mode: 'background',
+            delegation_id: 'delegation-1',
+            status: 'dispatched',
+          }),
+          display_content: JSON.stringify({
+            runtime: 'hermes',
+            mode: 'background',
+            delegation_id: 'delegation-1',
+            subagent_id: 'hermes-child',
+            status: 'completed',
+            task_index: 0,
+            task_count: 1,
+            goal: 'Inspect the task',
+            summary: 'Hermes inspection completed.',
+            output: 'Hermes inspection completed.',
+          }),
+          tool_call_id: 'delegate-call-1',
+          tool_name: 'delegate_task',
+          timestamp: 100,
+        }],
+        events: [],
+        backgroundTasks: [],
+      })
+      return {} as any
+    })
+
+    const store = useChatStore()
+    store.sessions = [makeSession('session-1')]
+    await store.switchSession('session-1')
+
+    expect(store.messages).toEqual([
+      expect.objectContaining({
+        role: 'tool',
+        toolName: 'delegate_task',
+        toolCallId: 'subagent:hermes-child',
+        toolStatus: 'done',
+        toolPreview: expect.stringContaining('Hermes inspection completed.'),
+      }),
+    ])
+    expect(store.getSubagentStream('session-1', 'hermes-child')).toEqual(expect.objectContaining({
+      status: 'completed',
+      summary: 'Hermes inspection completed.',
+    }))
   })
 
   it('surfaces non-terminal reattach warnings replayed in a non-working resume payload', async () => {
@@ -508,6 +837,100 @@ describe('chat store compression state', () => {
       (message: Message) => message.role === 'system' && message.content.includes('Agent returned no output'),
     )).toBe(true)
     expect(dispatchSpy).not.toHaveBeenCalled()
+  })
+
+  it('does not report an intentional queue insertion completion as an empty provider response', async () => {
+    const store = useChatStore()
+    store.sessions = [makeSession('session-1')]
+    await store.switchSession('session-1')
+
+    handlers.onRunCompleted({
+      event: 'run.completed',
+      output: '',
+      run_id: 'run-queue-insertion',
+      interrupted: true,
+      stop_reason: 'queue_insertion',
+      boundary_guarantee: 'strict',
+      queue_remaining: 1,
+    })
+    await nextTick()
+
+    expect(store.activeSession?.messages.some(
+      (message: Message) => message.role === 'system' && message.content.includes('Agent returned no output'),
+    )).toBe(false)
+  })
+
+  it('does not report a socket queue insertion completion as an empty provider response', async () => {
+    const store = useChatStore()
+    const session = makeSession('session-1')
+    store.sessions = [session]
+    store.activeSessionId = 'session-1'
+    store.activeSession = session
+
+    await store.sendMessage('first run')
+    const onEvent = chatApi.startRunViaSocket.mock.calls[0][1] as (event: any) => void
+    onEvent({
+      event: 'run.completed',
+      session_id: 'session-1',
+      output: '',
+      run_id: 'run-queue-insertion-socket',
+      interrupted: true,
+      stop_reason: 'queue_insertion',
+      boundary_guarantee: 'strict',
+      queue_remaining: 1,
+    })
+    await nextTick()
+
+    expect(store.activeSession?.messages.some(
+      (message: Message) => message.role === 'system' && message.content.includes('Agent returned no output'),
+    )).toBe(false)
+  })
+
+  it('does not report an intentional queue insertion failure from a session handler', async () => {
+    const store = useChatStore()
+    store.sessions = [makeSession('session-1')]
+    await store.switchSession('session-1')
+
+    handlers.onRunFailed({
+      event: 'run.failed',
+      error: 'Agent reported failure',
+      run_id: 'run-queue-insertion-failure',
+      interrupted: true,
+      stop_reason: 'queue_insertion',
+      boundary_guarantee: 'strict',
+      queue_remaining: 1,
+    })
+    await nextTick()
+
+    expect(store.activeSession?.messages.some(
+      (message: Message) => message.systemType === 'error',
+    )).toBe(false)
+  })
+
+  it('does not report an intentional queue insertion failure from the active socket', async () => {
+    const store = useChatStore()
+    const session = makeSession('session-1')
+    store.sessions = [session]
+    store.activeSessionId = 'session-1'
+    store.activeSession = session
+
+    await store.sendMessage('first run')
+    const onEvent = chatApi.startRunViaSocket.mock.calls[0][1] as (event: any) => void
+    onEvent({
+      event: 'run.failed',
+      session_id: 'session-1',
+      error: 'Agent reported failure',
+      run_id: 'run-queue-insertion-failure-socket',
+      interrupted: true,
+      stop_reason: 'queue_insertion',
+      boundary_guarantee: 'strict',
+      queue_remaining: 1,
+    })
+    await nextTick()
+
+    expect(store.activeSession?.messages.some(
+      (message: Message) => message.systemType === 'error',
+    )).toBe(false)
   })
 
   it('renders parsed_content-only completion as a new assistant message after reconnect resume and auto-plays it', async () => {
@@ -968,5 +1391,123 @@ describe('chat store compression state', () => {
     const tool = store.activeSession?.messages.find((message: Message) => message.id === 'tool-1')
     expect(tool?.toolStatus).toBe('done')
     expect(tool?.toolResult).toEqual({ ok: true })
+  })
+
+  it('scopes repeated tool ids in registered session handlers', async () => {
+    const store = useChatStore()
+    store.sessions = [makeSession('session-1')]
+    await store.switchSession('session-1')
+    store.activeSession!.messages = [{
+      id: 'old-tool',
+      role: 'tool',
+      content: '',
+      timestamp: Date.now() - 1_000,
+      toolName: 'Command',
+      toolCallId: 'item_2',
+      toolResult: 'old result',
+      toolStatus: 'done',
+      runMarker: 'run-a',
+    }]
+
+    handlers.onToolStarted({
+      event: 'tool.started',
+      tool: 'Command',
+      tool_call_id: 'item_2',
+      arguments: { command: 'ls' },
+      run_marker: 'run-b',
+    })
+    handlers.onToolCompleted({
+      event: 'tool.completed',
+      tool: 'Command',
+      tool_call_id: 'item_2',
+      output: 'new result',
+      run_marker: 'run-b',
+    })
+
+    expect(store.activeSession?.messages.filter(message => message.role === 'tool')).toEqual([
+      expect.objectContaining({
+        id: 'old-tool',
+        runMarker: 'run-a',
+        toolResult: 'old result',
+      }),
+      expect.objectContaining({
+        runMarker: 'run-b',
+        toolStatus: 'done',
+        toolResult: 'new result',
+      }),
+    ])
+  })
+
+  it('scopes repeated tool ids while replaying resume events', async () => {
+    chatApi.resumeSession.mockImplementation((sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({
+        session_id: sessionId,
+        isWorking: true,
+        messages: [
+          {
+            id: 1,
+            role: 'assistant',
+            content: '',
+            run_marker: 'run-a',
+            tool_calls: [{
+              id: 'item_2',
+              type: 'function',
+              function: { name: 'Command', arguments: '{"command":"pwd"}' },
+            }],
+            finish_reason: 'tool_calls',
+            timestamp: 1,
+          },
+          {
+            id: 2,
+            role: 'tool',
+            content: 'old result',
+            tool_name: 'Command',
+            tool_call_id: 'item_2',
+            run_marker: 'run-a',
+            timestamp: 2,
+          },
+        ],
+        events: [
+          {
+            event: 'tool.started',
+            data: {
+              event: 'tool.started',
+              tool: 'Command',
+              tool_call_id: 'item_2',
+              arguments: { command: 'ls' },
+              run_marker: 'run-b',
+            },
+          },
+          {
+            event: 'tool.completed',
+            data: {
+              event: 'tool.completed',
+              tool: 'Command',
+              tool_call_id: 'item_2',
+              output: 'new result',
+              run_marker: 'run-b',
+            },
+          },
+        ],
+      })
+      return {} as any
+    })
+    const store = useChatStore()
+    store.sessions = [makeSession('session-1')]
+
+    await store.switchSession('session-1')
+
+    expect(store.messages.filter(message => message.role === 'tool')).toEqual([
+      expect.objectContaining({
+        runMarker: 'run-a',
+        toolStatus: 'done',
+        toolResult: 'old result',
+      }),
+      expect.objectContaining({
+        runMarker: 'run-b',
+        toolStatus: 'done',
+        toolResult: 'new result',
+      }),
+    ])
   })
 })

@@ -1,17 +1,26 @@
 import { createHash } from 'crypto'
 import { describe, expect, it } from 'vitest'
-import { assertWorkflowImportCapabilities, workflowImportEnvironmentRevision } from '../../packages/server/src/services/workflow-import-capabilities'
+import { assertWorkflowImportCapabilities, workflowImportEnvironmentRevision } from '../../packages/server/src/modules/studio/services/workflow/import-capabilities'
 
 const node = (data: Record<string, unknown>) => ({ id: 'agent', type: 'agent', data: { agent: 'hermes', ...data } })
 
 describe('workflow import capabilities', () => {
-  it('requires an exact configured provider, model, and api mode tuple', () => {
+  it('validates Hermes targets by provider and model while leaving api mode profile-owned', () => {
     const groups = [{ provider: 'custom:test', models: ['model-a'], api_mode: 'codex_responses' }]
     expect(() => assertWorkflowImportCapabilities([node({ provider: 'custom:test', model: 'model-a', apiMode: 'codex_responses' })], groups)).not.toThrow()
     expect(() => assertWorkflowImportCapabilities([node({ provider: 'custom:test', model: 'model-b', apiMode: 'codex_responses' })], groups)).toThrow('unavailable')
-    expect(() => assertWorkflowImportCapabilities([node({ provider: 'custom:test', model: 'model-a', apiMode: 'chat_completions' })], groups)).toThrow('unavailable')
-    expect(() => assertWorkflowImportCapabilities([node({ provider: 'custom:test', model: 'model-a', apiMode: 'chat_completions' })], [{ provider: 'custom:test', models: ['model-a'] }])).toThrow('unavailable')
+    expect(() => assertWorkflowImportCapabilities([node({ provider: 'custom:test', model: 'model-a', apiMode: 'chat_completions' })], groups)).not.toThrow()
+    expect(() => assertWorkflowImportCapabilities([node({ provider: 'custom:test', model: 'model-a', apiMode: 'codex_responses' })], [{ provider: 'custom:test', models: ['model-a'] }])).not.toThrow()
   })
+
+  it.each(['openai-codex', 'xai-oauth'])(
+    'accepts Hermes provider %s when its catalog omits api mode',
+    (provider) => {
+      expect(() => assertWorkflowImportCapabilities([
+        node({ provider, model: 'model-a', apiMode: 'codex_responses' }),
+      ], [{ provider, models: ['model-a'] }])).not.toThrow()
+    },
+  )
 
   it('accepts scoped Coding Agent protocol overrides for a configured provider and model', () => {
     const groups = [{ provider: 'custom:test', models: ['model-a'], api_mode: 'chat_completions' }]
@@ -20,6 +29,23 @@ describe('workflow import capabilities', () => {
       node({ agent: 'codex', provider: 'custom:test', model: 'model-a', apiMode: 'codex_responses' }),
       node({ agent: 'claude-code', provider: 'custom:test', model: 'model-a', apiMode: 'anthropic_messages' }),
     ], groups)).not.toThrow()
+  })
+
+  it('accepts Ekko protocol overrides and server-managed auth providers', () => {
+    expect(() => assertWorkflowImportCapabilities([
+      node({ agent: 'ekko-agent', provider: 'openai-codex', model: 'model-a', apiMode: 'chat_completions' }),
+    ], [{ provider: 'openai-codex', models: ['model-a'], api_mode: 'codex_responses' }])).not.toThrow()
+  })
+
+  it('keeps Ekko targets fail closed for missing models and unsupported protocols', () => {
+    const groups = [{ provider: 'openai-codex', models: ['model-a'], api_mode: 'codex_responses' }]
+
+    expect(() => assertWorkflowImportCapabilities([
+      node({ agent: 'ekko-agent', provider: 'openai-codex', model: 'model-b', apiMode: 'codex_responses' }),
+    ], groups)).toThrow('unavailable')
+    expect(() => assertWorkflowImportCapabilities([
+      node({ agent: 'ekko-agent', provider: 'openai-codex', model: 'model-a', apiMode: 'bedrock_converse' }),
+    ], groups)).toThrow('unavailable')
   })
 
   it('keeps scoped Coding Agent targets fail closed for missing models and unsupported protocols', () => {
@@ -33,7 +59,7 @@ describe('workflow import capabilities', () => {
     ], groups)).toThrow('unavailable')
   })
 
-  it.each(['openai-codex', 'copilot', 'xai-oauth', 'qwen-oauth', 'nous', 'claude-oauth'])(
+  it.each(['openai-codex', 'copilot', 'xai-oauth', 'qwen-oauth', 'nous', 'claude-oauth', 'minimax-oauth'])(
     'rejects scoped Coding Agent targets backed by auth provider %s',
     (provider) => {
       expect(() => assertWorkflowImportCapabilities([

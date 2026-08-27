@@ -1,23 +1,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { NButton, NSwitch, NSelect, NInputNumber, useMessage } from 'naive-ui'
+import { NButton, NSwitch, NInputNumber, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useSettingsStore } from '@/stores/hermes/settings'
-import { useTheme, type BrightnessMode } from '@/composables/useTheme'
-import { requestCompletionNotificationPermission, showCompletionNotification, type CompletionNotificationPermissionResult } from '@/utils/completion-notification'
+import { primeCompletionSound } from '@/utils/completion-sound'
+import { requestCompletionNotificationPermission, showCompletionNotification, showSystemNotification, type CompletionNotificationPermissionResult } from '@/utils/completion-notification'
 import { clampChatInputHeight, MAX_CHAT_INPUT_HEIGHT, MIN_CHAT_INPUT_HEIGHT } from '@/utils/chat-input-height'
 import SettingRow from './SettingRow.vue'
 
 const settingsStore = useSettingsStore()
 const message = useMessage()
 const { t } = useI18n()
-const { brightness, setBrightness } = useTheme()
-
-const themeOptions = [
-  { label: t('settings.display.themeLight'), value: 'light' },
-  { label: t('settings.display.themeDark'), value: 'dark' },
-  { label: t('settings.display.themeSystem'), value: 'system' },
-]
 const chatInputHeight = computed(() => clampChatInputHeight(settingsStore.display.chat_input_height))
 
 async function save(values: Record<string, any>) {
@@ -27,12 +20,6 @@ async function save(values: Record<string, any>) {
   } catch (err: any) {
     message.error(t('settings.saveFailed'))
   }
-}
-
-function handleThemeChange(val: string) {
-  const m = val as BrightnessMode
-  setBrightness(m)
-  save({ skin: m })
 }
 
 function handleChatInputHeightChange(value: number | null) {
@@ -47,6 +34,51 @@ function notificationPermissionErrorKey(result: CompletionNotificationPermission
   if (result.reason === 'insecure') return 'settings.display.notifyOnCompleteInsecure'
   if (result.reason === 'unsupported') return 'settings.display.notifyOnCompleteUnsupported'
   return 'settings.display.notifyOnCompleteDenied'
+}
+
+function handleApprovalBellChange(value: boolean) {
+  if (value) primeCompletionSound()
+  return save({ approval_bell: value })
+}
+
+async function handleNotifyOnApprovalChange(value: boolean) {
+  if (value) {
+    const result = await requestCompletionNotificationPermission()
+    if (!result.granted) {
+      message.error(t(notificationPermissionErrorKey(result)))
+      return
+    }
+    const shown = await showSystemNotification({
+      title: 'Hermes',
+      body: t('settings.display.notifyOnApprovalTest'),
+      icon: '/coding-agents/hermes.png',
+      tag: `hermes-approval-test-${Date.now()}`,
+    }, { requireBackground: false, deduplicate: false })
+    if (!shown) {
+      message.error(t('settings.display.notifyOnApprovalTestFailed'))
+      return
+    }
+  }
+  await save({ notify_on_approval: value })
+}
+
+async function testApprovalNotification() {
+  const result = await requestCompletionNotificationPermission()
+  if (!result.granted) {
+    message.error(t(notificationPermissionErrorKey(result)))
+    return
+  }
+  const shown = await showSystemNotification({
+    title: 'Hermes',
+    body: t('settings.display.notifyOnApprovalTest'),
+    icon: '/coding-agents/hermes.png',
+    tag: `hermes-approval-test-${Date.now()}`,
+  }, { requireBackground: false, deduplicate: false })
+  if (!shown) {
+    message.error(t('settings.display.notifyOnApprovalTestFailed'))
+    return
+  }
+  message.success(t('settings.display.notifyOnApprovalTestSent'))
 }
 
 async function handleNotifyOnCompleteChange(value: boolean) {
@@ -90,9 +122,6 @@ async function testCompletionNotification() {
 
 <template>
   <section class="settings-section">
-    <SettingRow :label="t('settings.display.theme')" :hint="t('settings.display.themeHint')">
-      <NSelect :value="brightness" :options="themeOptions" size="small" :consistent-menu-width="false" class="input-sm" @update:value="handleThemeChange" />
-    </SettingRow>
     <SettingRow :label="t('settings.display.streaming')" :hint="t('settings.display.streamingHint')">
       <NSwitch :value="settingsStore.display.streaming" @update:value="v => save({ streaming: v })" />
     </SettingRow>
@@ -110,6 +139,17 @@ async function testCompletionNotification() {
     </SettingRow>
     <SettingRow :label="t('settings.display.bellOnComplete')" :hint="t('settings.display.bellOnCompleteHint')">
       <NSwitch :value="settingsStore.display.bell_on_complete" @update:value="v => save({ bell_on_complete: v })" />
+    </SettingRow>
+    <SettingRow :label="t('settings.display.approvalBell')" :hint="t('settings.display.approvalBellHint')">
+      <NSwitch :value="settingsStore.display.approval_bell" @update:value="handleApprovalBellChange" />
+    </SettingRow>
+    <SettingRow :label="t('settings.display.notifyOnApproval')" :hint="`${t('settings.display.notifyOnApprovalHint')} ${t('settings.display.notifyOnCompleteMacHint')}`">
+      <div class="notify-controls">
+        <NSwitch :value="settingsStore.display.notify_on_approval" @update:value="handleNotifyOnApprovalChange" />
+        <NButton size="tiny" secondary @click="testApprovalNotification">
+          {{ t('settings.display.notifyOnApprovalTestButton') }}
+        </NButton>
+      </div>
     </SettingRow>
     <SettingRow :label="t('settings.display.notifyOnComplete')" :hint="`${t('settings.display.notifyOnCompleteHint')} ${t('settings.display.notifyOnCompleteMacHint')}`">
       <div class="notify-controls">

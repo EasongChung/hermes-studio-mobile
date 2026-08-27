@@ -7,20 +7,49 @@ import { useSettingsStore } from '@/stores/hermes/settings'
 import { useToolTraceVisibility } from '@/composables/useToolTraceVisibility'
 import { extractClipboardFiles } from '@/utils/clipboard-files'
 import { buildMentionOptions, type MentionOption } from './mention-options'
+import type { GroupChatMention } from '@/api/studio/group-chat'
 import type { Attachment } from '@/stores/hermes/chat'
 import { clampChatInputHeight, isMobileChatInputViewport } from '@/utils/chat-input-height'
+import VoiceDialogueControls from '@/components/hermes/chat/VoiceDialogueControls.vue'
+import { normalizeComposerVoiceTranscript, useComposerVoiceInput } from '@/composables/useComposerVoiceInput'
+import {
+    clearGroupChatRoomDraft,
+    loadGroupChatRoomDraft,
+    saveGroupChatRoomDraft,
+    type GroupChatTrackedMention,
+} from './group-chat-room-drafts'
 
 const { t } = useI18n()
-const emit = defineEmits<{ send: [content: string, attachments?: Attachment[]] }>()
+const props = withDefaults(defineProps<{
+    roomId?: string | null
+    sendBlocked?: boolean
+    allowAttachments?: boolean
+    showSettings?: boolean
+    allowAllMention?: boolean
+}>(), {
+    roomId: null,
+    sendBlocked: false,
+    allowAttachments: true,
+    showSettings: true,
+    allowAllMention: false,
+})
+const emit = defineEmits<{
+    send: [content: string, attachments?: Attachment[], mentions?: GroupChatMention[]]
+    'send-blocked': []
+}>()
 const store = useGroupChatStore()
 const settingsStore = useSettingsStore()
 const { toolTraceVisible, toggleToolTraceVisible } = useToolTraceVisibility()
 
 const inputText = ref('')
+const mentions = ref<GroupChatTrackedMention[]>([])
+const previousInputText = ref('')
 const textareaRef = ref<HTMLTextAreaElement>()
 const dropdownRef = ref<HTMLDivElement>()
 const fileInputRef = ref<HTMLInputElement>()
 const attachments = ref<Attachment[]>([])
+const isSending = ref(false)
+const pendingSendRoomId = ref<string | null>(null)
 const isDragging = ref(false)
 const dragCounter = ref(0)
 const isComposing = ref(false)
@@ -54,10 +83,15 @@ const configuredTextareaHeight = computed(() =>
 )
 
 onMounted(() => {
-    const saved = localStorage.getItem('autoPlaySpeech')
-    if (saved !== null) {
-        autoPlaySpeech.value = saved === 'true'
-        store.setAutoPlaySpeech(autoPlaySpeech.value)
+    if (props.showSettings) {
+        const saved = localStorage.getItem('autoPlaySpeech')
+        if (saved !== null) {
+            autoPlaySpeech.value = saved === 'true'
+            store.setAutoPlaySpeech(autoPlaySpeech.value)
+        }
+    } else {
+        autoPlaySpeech.value = false
+        store.setAutoPlaySpeech(false)
     }
     syncViewport()
     window.addEventListener('resize', syncViewport)
@@ -94,7 +128,20 @@ watch(() => settingsStore.display.chat_input_height, () => {
 watch(
     () => activeMessageReference.value?.id,
     (id) => {
-        if (id) nextTick(() => textareaRef.value?.focus())
+        if (!id) return
+        const reference = activeMessageReference.value
+        const senderId = reference?.senderId?.trim() || ''
+        const agent = store.agents.find(candidate => senderId && (candidate.agentId === senderId || candidate.id === senderId))
+        const isSelf = !!senderId && senderId === store.userId
+        if (agent && !isSelf && !mentions.value.some(mention => mention.type === 'agent' && mention.participantId === agent.agentId)) {
+            insertStructuredMention({
+                type: 'agent',
+                participantId: agent.agentId,
+                displayName: agent.name,
+            })
+            store.emitTyping()
+        }
+        nextTick(() => textareaRef.value?.focus())
     },
 )
 
@@ -182,9 +229,51 @@ const dropdownBottom = ref(0)
 const placement = ref<'bottom' | 'top'>('bottom')
 const activeIndex = ref(0)
 
-const filteredMentionOptions = computed(() => buildMentionOptions(store.agents, mentionQuery.value))
+const filteredMentionOptions = computed(() => buildMentionOptions(
+    store.agents,
+    mentionQuery.value,
+    props.allowAllMention,
+    t('groupChat.allAgents'),
+))
 
-const canSend = computed(() => !!inputText.value.trim() || attachments.value.length > 0)
+const canSend = computed(() => !!inputText.value.trim() || (props.allowAttachments && attachments.value.length > 0))
+
+function resetTransientComposerState() {
+    for (const attachment of attachments.value) URL.revokeObjectURL(attachment.url)
+    attachments.value = []
+    mentionActive.value = false
+    mentionStartIndex.value = -1
+    mentionQuery.value = ''
+}
+
+function restoreRoomDraft(roomId: string | null) {
+    resetTransientComposerState()
+    const draft = roomId ? loadGroupChatRoomDraft(roomId) : null
+    inputText.value = draft?.text || ''
+    mentions.value = draft?.mentions.map(mention => ({ ...mention })) || []
+    previousInputText.value = inputText.value
+    nextTick(() => {
+        autoSizeTextarea()
+    })
+}
+
+watch(
+    () => props.roomId,
+    roomId => restoreRoomDraft(roomId),
+    { immediate: true },
+)
+
+watch(
+    [inputText, mentions],
+    () => {
+        if (!props.roomId) return
+        saveGroupChatRoomDraft(props.roomId, {
+            text: inputText.value,
+            mentions: mentions.value,
+        })
+    },
+    { deep: true, flush: 'sync' },
+)
 
 // ─── Scroll active item into view ──────────────────────
 
@@ -267,23 +356,158 @@ function updateMentionState() {
     mentionActive.value = filteredMentionOptions.value.length > 0
 }
 
-function selectMention(name: string) {
+function selectMention(option: MentionOption) {
+    if (isSending.value) return
     const el = textareaRef.value
     if (!el || mentionStartIndex.value === -1) return
 
     const before = inputText.value.slice(0, mentionStartIndex.value)
-    const after = inputText.value.slice(el.selectionStart)
-    inputText.value = `${before}@${name} ${after}`
+    replaceInputRange(mentionStartIndex.value, el.selectionStart, `@${option.name} `, option)
     mentionActive.value = false
 
     nextTick(() => {
         if (el) {
-            const newPos = before.length + name.length + 2
+            const newPos = before.length + option.name.length + 2
             el.setSelectionRange(newPos, newPos)
             el.focus()
             autoSizeTextarea(el)
         }
     })
+}
+
+function insertMention(name: string, participantId?: string) {
+    if (isSending.value) return
+    const mentionName = String(name || '').trim()
+    if (!mentionName) return
+
+    const el = textareaRef.value
+    const selectionStart = el?.selectionStart ?? inputText.value.length
+    const selectionEnd = el?.selectionEnd ?? selectionStart
+    const before = inputText.value.slice(0, selectionStart)
+    const after = inputText.value.slice(selectionEnd)
+    const leadingSpace = before && !/\s$/.test(before) ? ' ' : ''
+    const trailingSpace = after && /^\s/.test(after) ? '' : ' '
+    const inserted = `${leadingSpace}@${mentionName}${trailingSpace}`
+    const matchingAgents = store.agents.filter(agent => agent.name === mentionName)
+    const identifiedAgent = participantId
+        ? matchingAgents.find(agent => agent.agentId === participantId)
+        : matchingAgents.length === 1
+            ? matchingAgents[0]
+            : undefined
+    replaceInputRange(
+        selectionStart,
+        selectionEnd,
+        inserted,
+        identifiedAgent
+            ? { type: 'agent', participantId: identifiedAgent.agentId, displayName: identifiedAgent.name }
+            : undefined,
+    )
+    mentionActive.value = false
+    mentionStartIndex.value = -1
+    mentionQuery.value = ''
+    store.emitTyping()
+
+    nextTick(() => {
+        if (!el) return
+        const existingWhitespaceOffset = !trailingSpace && /^[ \t]/.test(after) ? 1 : 0
+        const nextPosition = before.length + inserted.length + existingWhitespaceOffset
+        el.setSelectionRange(nextPosition, nextPosition)
+        el.focus()
+        autoSizeTextarea(el)
+    })
+}
+
+function normalizeMention(mention: GroupChatMention | MentionOption): GroupChatMention | null {
+    const displayName = 'displayName' in mention ? mention.displayName : mention.name
+    const normalized: GroupChatMention = mention.type === 'all'
+        ? { type: 'all', displayName: 'all' }
+        : {
+            type: 'agent',
+            participantId: mention.participantId,
+            displayName,
+        }
+    if (!normalized.displayName || (normalized.type === 'agent' && !normalized.participantId)) return null
+    return normalized
+}
+
+function replaceInputRange(start: number, end: number, replacement: string, mention?: GroupChatMention | MentionOption) {
+    const before = inputText.value
+    const delta = replacement.length - (end - start)
+    mentions.value = mentions.value
+        .filter(candidate => candidate.end <= start || candidate.start >= end)
+        .map(candidate => candidate.start >= end
+            ? { ...candidate, start: candidate.start + delta, end: candidate.end + delta }
+            : candidate)
+    inputText.value = `${before.slice(0, start)}${replacement}${before.slice(end)}`
+    previousInputText.value = inputText.value
+
+    const normalized = mention ? normalizeMention(mention) : null
+    if (normalized) {
+        const tokenEnd = start + `@${normalized.displayName}`.length
+        mentions.value.push({ ...normalized, start, end: tokenEnd })
+    }
+}
+
+function insertVoiceTranscriptIntoInput(text: string) {
+    if (isSending.value) return
+    const transcript = normalizeComposerVoiceTranscript(text)
+    if (!transcript) return
+    const el = textareaRef.value
+    const selectionStart = el?.selectionStart ?? inputText.value.length
+    const selectionEnd = el?.selectionEnd ?? selectionStart
+    const before = inputText.value.slice(0, selectionStart)
+    const after = inputText.value.slice(selectionEnd)
+    const prefix = before && !/\s$/.test(before) ? ' ' : ''
+    const suffix = after && !/^\s/.test(after) ? ' ' : ''
+    const inserted = `${prefix}${transcript}${suffix}`
+    replaceInputRange(selectionStart, selectionEnd, inserted)
+    mentionActive.value = false
+    store.emitTyping()
+    nextTick(() => {
+        if (!el) return
+        const cursor = selectionStart + prefix.length + transcript.length
+        el.focus()
+        el.setSelectionRange(cursor, cursor)
+        autoSizeTextarea(el)
+    })
+}
+
+const voiceInput = useComposerVoiceInput({
+    insertTranscript: insertVoiceTranscriptIntoInput,
+})
+
+function insertStructuredMention(mention: GroupChatMention) {
+    if (isSending.value) return
+    const normalized = normalizeMention(mention)
+    if (!normalized) return
+    if (mentions.value.some(candidate =>
+        candidate.type === normalized.type &&
+        candidate.participantId === normalized.participantId &&
+        inputText.value.slice(candidate.start, candidate.end) === `@${normalized.displayName}`,
+    )) return
+    replaceInputRange(0, 0, `@${normalized.displayName} `, normalized)
+}
+
+function syncMentionMetadata() {
+    const current = inputText.value
+    const previous = previousInputText.value
+    let prefix = 0
+    while (prefix < previous.length && prefix < current.length && previous[prefix] === current[prefix]) prefix += 1
+    let suffix = 0
+    while (
+        suffix < previous.length - prefix &&
+        suffix < current.length - prefix &&
+        previous[previous.length - suffix - 1] === current[current.length - suffix - 1]
+    ) suffix += 1
+    const previousChangedEnd = previous.length - suffix
+    const delta = current.length - previous.length
+    mentions.value = mentions.value
+        .filter(mention => mention.end <= prefix || mention.start >= previousChangedEnd)
+        .map(mention => mention.start >= previousChangedEnd
+            ? { ...mention, start: mention.start + delta, end: mention.end + delta }
+            : mention)
+        .filter(mention => current.slice(mention.start, mention.end) === `@${mention.displayName}`)
+    previousInputText.value = current
 }
 
 // ─── Event Handlers ──────────────────────────────────────
@@ -305,7 +529,7 @@ function handleKeydown(e: KeyboardEvent) {
         }
         if (e.key === 'Enter' || e.key === 'Tab') {
             e.preventDefault()
-            selectMention(filteredMentionOptions.value[activeIndex.value].name)
+            selectMention(filteredMentionOptions.value[activeIndex.value])
             return
         }
         if (e.key === 'Escape') {
@@ -322,18 +546,38 @@ function handleKeydown(e: KeyboardEvent) {
 }
 
 function handleSend() {
+    if (isSending.value) return
     const content = inputText.value.trim()
     if (!content && attachments.value.length === 0) return
+    if (props.sendBlocked) {
+        emit('send-blocked')
+        return
+    }
 
-    emit('send', content, attachments.value.length > 0 ? attachments.value : undefined)
+    const structuredMentions = mentions.value.map(({ start: _start, end: _end, ...mention }) => mention)
+    isSending.value = true
+    pendingSendRoomId.value = props.roomId
+    emit('send', content, attachments.value.length > 0 ? attachments.value : undefined, structuredMentions.length ? structuredMentions : undefined)
+}
+
+function completeSend(success: boolean) {
+    if (!isSending.value) return
+    const submittedRoomId = pendingSendRoomId.value
+    isSending.value = false
+    pendingSendRoomId.value = null
+    if (!success) return
+
+    if (submittedRoomId) clearGroupChatRoomDraft(submittedRoomId)
+    if (props.roomId !== submittedRoomId) return
     inputText.value = ''
-    attachments.value = []
-    mentionActive.value = false
-    // 发送后重置到自定义高度（不清除拖拽状态）
+    mentions.value = []
+    previousInputText.value = ''
+    resetTransientComposerState()
 }
 
 function handleInput(e: Event) {
     store.emitTyping()
+    syncMentionMetadata()
     if (!isComposing.value) {
         updateMentionState()
     }
@@ -345,7 +589,7 @@ function handleInput(e: Event) {
 }
 
 function handleMentionClick(option: MentionOption) {
-    selectMention(option.name)
+    selectMention(option)
 }
 
 function handleMentionHover(index: number) {
@@ -383,6 +627,7 @@ function handleCompositionEnd() {
 }
 
 function addFile(file: File) {
+    if (isSending.value || !props.allowAttachments) return
     if (attachments.value.find(a => a.name === file.name)) return
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
     attachments.value.push({
@@ -401,6 +646,7 @@ function addFiles(files: File[]) {
 }
 
 function handleAttachClick() {
+    if (!props.allowAttachments) return
     fileInputRef.value?.click()
 }
 
@@ -412,6 +658,7 @@ function handleFileChange(e: Event) {
 }
 
 function handlePaste(e: ClipboardEvent) {
+    if (!props.allowAttachments) return
     const files = extractClipboardFiles(e.clipboardData)
     if (!files.length) return
     e.preventDefault()
@@ -419,10 +666,12 @@ function handlePaste(e: ClipboardEvent) {
 }
 
 function handleDragOver(e: DragEvent) {
+    if (!props.allowAttachments) return
     e.preventDefault()
 }
 
 function handleDragEnter(e: DragEvent) {
+    if (!props.allowAttachments) return
     e.preventDefault()
     if (e.dataTransfer?.types.includes('Files')) {
         dragCounter.value++
@@ -439,15 +688,17 @@ function handleDragLeave() {
 }
 
 function handleDrop(e: DragEvent) {
+    if (!props.allowAttachments) return
     e.preventDefault()
     dragCounter.value = 0
     isDragging.value = false
     addFiles(Array.from(e.dataTransfer?.files || []))
 }
 
-defineExpose({ addFiles })
+defineExpose({ addFiles, insertMention, handleSend, completeSend })
 
 function removeAttachment(id: string) {
+    if (isSending.value) return
     const idx = attachments.value.findIndex(a => a.id === id)
     if (idx !== -1) {
         URL.revokeObjectURL(attachments.value[idx].url)
@@ -504,7 +755,7 @@ function isImage(type: string): boolean {
             @dragleave="handleDragLeave"
             @drop="handleDrop"
         >
-            <input ref="fileInputRef" type="file" multiple class="file-input-hidden" @change="handleFileChange" />
+            <input v-if="props.allowAttachments" ref="fileInputRef" type="file" multiple class="file-input-hidden" @change="handleFileChange" />
             <div class="resize-handle" :title="t('chat.inputHeightResizeHint')" @mousedown="startResize" @dblclick="resetTextareaHeight"></div>
             <textarea
                 ref="textareaRef"
@@ -513,6 +764,7 @@ function isImage(type: string): boolean {
                 :style="textareaHeight ? { height: textareaHeight + 'px' } : {}"
                 :placeholder="t('groupChat.inputPlaceholder')"
                 rows="1"
+                :readonly="isSending"
                 @keydown="handleKeydown"
                 @compositionstart="handleCompositionStart"
                 @compositionend="handleCompositionEnd"
@@ -521,7 +773,7 @@ function isImage(type: string): boolean {
             />
             <div class="input-toolbar">
                 <div class="input-top-bar">
-                    <NTooltip trigger="hover" :disabled="isMobileViewport">
+                    <NTooltip v-if="props.allowAttachments" trigger="hover" :disabled="isMobileViewport">
                         <template #trigger>
                             <NButton quaternary size="tiny" circle class="toolbar-icon-button" @click="handleAttachClick">
                                 <template #icon>
@@ -532,6 +784,7 @@ function isImage(type: string): boolean {
                         {{ t('chat.attachFiles') }}
                     </NTooltip>
                     <NDropdown
+                        v-if="props.showSettings"
                         trigger="click"
                         :options="inputSettingsOptions"
                         :show-arrow="true"
@@ -555,12 +808,21 @@ function isImage(type: string): boolean {
                     </NDropdown>
                 </div>
                 <div class="input-actions">
+                    <VoiceDialogueControls
+                        :status="voiceInput.dialogue.status.value"
+                        :transcript="voiceInput.transcript.value"
+                        :error="voiceInput.error.value"
+                        :events="voiceInput.dialogue.events.value"
+                        :on-start="voiceInput.start"
+                        :on-stop="voiceInput.stop"
+                        :on-cancel="voiceInput.cancel"
+                    />
                     <NButton
                         size="medium"
                         type="primary"
                         circle
                         class="send-button"
-                        :disabled="!canSend"
+                        :disabled="!canSend || isSending"
                         :aria-label="t('chat.send')"
                         @click="handleSend"
                     >
@@ -623,8 +885,8 @@ function isImage(type: string): boolean {
     display: flex;
     align-items: center;
     gap: 5px;
-    padding-left: 2px;
-    margin-left: 0;
+    padding-inline-start: 2px;
+    margin-inline-start: 0;
 
     .switch-label {
         display: flex;
@@ -644,7 +906,7 @@ function isImage(type: string): boolean {
     width: 24px;
     min-width: 24px;
     height: 22px;
-    margin-left: 0;
+    margin-inline-start: 0;
     padding: 0;
     background: transparent !important;
 
@@ -834,7 +1096,7 @@ function isImage(type: string): boolean {
     width: 100%;
     min-height: 150px;
     background-color: $bg-card;
-    border: 1px solid $border-color;
+    border: 1px solid var(--input-border-color);
     border-radius: 18px;
     padding: 14px 12px 9px;
     position: relative;
@@ -842,8 +1104,12 @@ function isImage(type: string): boolean {
     transition: border-color $transition-fast, box-shadow $transition-fast;
 
     &:focus-within {
-        border-color: rgba(var(--text-primary-rgb), 0.22);
+        border-color: var(--input-border-focus-color);
         box-shadow: 0 10px 32px rgba(0, 0, 0, 0.11);
+    }
+
+    &:hover:not(:focus-within) {
+        border-color: var(--input-border-hover-color);
     }
 
     &.drag-over {
@@ -894,7 +1160,8 @@ function isImage(type: string): boolean {
     }
 
     &::placeholder {
-        color: $text-muted;
+        color: var(--input-placeholder-color);
+        opacity: 1;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;

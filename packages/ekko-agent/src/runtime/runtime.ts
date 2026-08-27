@@ -1,38 +1,109 @@
 import { randomUUID } from 'node:crypto'
-import { getEncoding } from 'js-tiktoken'
 import {
+  agentReasoningEstimatedTokens,
+  agentReasoningText,
   createSystemMessage,
   createToolResultMessage,
   collectModelEvents,
   modelResponseToAgentMessage,
   normalizeAgentMessages,
 } from '../model/messages'
+import { countTextTokens } from '../model/tokens'
 import type { AgentOutputMessage } from '../model/messages'
-import type { AgentMessage, AgentToolCall, ModelRequest, ModelResponse } from '../model/types'
+import type { AgentMessage, AgentToolCall, AgentToolDefinition, ModelRequest, ModelResponse } from '../model/types'
 import type { AgentSkill } from '../skills/types'
 import { AgentToolRegistry, createDefaultToolRegistry } from '../tools/registry'
 import { sanitizeAgentToolResult } from '../tools/tool-result-sanitizer'
-import type { AgentToolContext, AgentToolResult } from '../tools/types'
+import type { AgentTaskRequest, AgentToolContext, AgentToolResult } from '../tools/types'
 import type { AgentRuntimeEvent } from './events'
 import { buildSystemPrompt } from './system-prompt'
-import type { AgentRuntimeContextEstimate, AgentRuntimeOptions, AgentRuntimeRunInput, AgentRuntimeRunResult, AgentRuntimeStep } from './types'
+import type {
+  AgentRuntimeBoundaryInterruptRequest,
+  AgentRuntimeBoundaryInterruptResult,
+  AgentRuntimeBoundaryPhase,
+  AgentRuntimeContextEstimate,
+  AgentRuntimeOptions,
+  AgentRuntimeRunInput,
+  AgentRuntimeRunResult,
+  AgentRuntimeStep,
+  EkkoBackgroundContinuationContext,
+} from './types'
 import type { MemoryContext, MemoryRuntimeIdentity } from '../memory/types'
 import type { MemoryCaptureMessage } from '../memory/service'
 import { ModelMemoryExtractor } from '../memory/extraction'
 import { createMemoryTools } from '../memory/tools'
+import { SkillReviewService } from '../skills/review'
+import { EkkoRuntimeLogger } from '../logging/runtime-logger'
+import {
+  DEFAULT_AGENT_MAX_CONSECUTIVE_TOOL_FAILURES,
+  DEFAULT_AGENT_MAX_STEPS,
+  DEFAULT_AGENT_MODEL_MAX_RETRIES,
+  DEFAULT_AGENT_SUBTASK_MAX_STEPS,
+  DEFAULT_SKILL_REVIEW_TOOL_CALL_INTERVAL,
+} from '../config'
 
-export const DEFAULT_AGENT_MAX_STEPS = 90
-export const DEFAULT_AGENT_MODEL_MAX_RETRIES = 3
-export const DEFAULT_AGENT_MAX_CONSECUTIVE_TOOL_FAILURES = 6
-export const DEFAULT_AGENT_TOOL_DELAY_MS = 1000
+const MAX_TRACKED_SKILL_REVIEW_CONTEXTS = 1_024
+const SUBTASK_OUTPUT_TAIL_CHARS = 4_000
+const SUBTASK_SUMMARY_CHARS = 500
 
 interface ModelResponseResult {
   response: ModelResponse
   emittedReasoning: boolean
 }
 
+interface BackgroundTask {
+  sessionId?: string
+  controller: AbortController
+  promise: Promise<AgentToolResult>
+  resolveContinuationContext: (context: EkkoBackgroundContinuationContext | null) => void
+}
+
+interface ActiveBoundaryRun {
+  runId: string
+  sessionId: string
+  phase: AgentRuntimeBoundaryPhase
+  modelController: AbortController
+  pending: boolean
+  terminal: boolean
+}
+
+function foregroundOnlyDelegateTaskDefinition(definition: AgentToolDefinition): AgentToolDefinition {
+  if (definition.name !== 'delegate_task') return definition
+  const parameters = definition.parameters || {}
+  const properties = parameters.properties && typeof parameters.properties === 'object' && !Array.isArray(parameters.properties)
+    ? parameters.properties as Record<string, unknown>
+    : {}
+  const rawMode = properties.mode
+  const mode = rawMode && typeof rawMode === 'object' && !Array.isArray(rawMode)
+    ? rawMode as Record<string, unknown>
+    : {}
+  return {
+    ...definition,
+    description: [
+      'Delegate one self-contained task to an isolated Ekko subagent.',
+      'Only foreground delegation is available in this run; the parent waits for the result.',
+    ].join(' '),
+    parameters: {
+      ...parameters,
+      properties: {
+        ...properties,
+        mode: {
+          ...mode,
+          enum: ['foreground'],
+          description: 'foreground waits for and returns the result.',
+        },
+      },
+    },
+  }
+}
+
+function cloneAgentMessages(messages: AgentMessage[]): AgentMessage[] {
+  return structuredClone(messages)
+}
+
 export class AgentRuntime {
   private readonly modelClient?: AgentRuntimeOptions['modelClient']
+  private readonly profileId?: string
   private readonly toolsEnabled: boolean
   private readonly tools: AgentToolRegistry
   private readonly skillsEnabled: boolean
@@ -44,17 +115,31 @@ export class AgentRuntime {
   private readonly modelDefaults?: AgentRuntimeOptions['modelDefaults']
   private readonly maxModelRetries: number
   private readonly maxConsecutiveToolFailures: number
-  private readonly toolDelayMs: number
+  private readonly backgroundDelegationEnabled: boolean
+  private readonly subtaskMaxSteps: number
   private readonly defaultContextKey?: string
   private readonly memory?: AgentRuntimeOptions['memory']
+  private readonly skillReview?: SkillReviewService
+  private readonly skillReviewEveryToolCalls: number
+  private readonly skillToolCallCounts = new Map<string, number>()
   private readonly modelContexts = new Map<string, unknown>()
+  private readonly backgroundTasks = new Map<string, BackgroundTask>()
+  private readonly activeBoundaryRuns = new Map<string, ActiveBoundaryRun>()
+  private readonly runtimeLogger?: EkkoRuntimeLogger
 
   constructor(options: AgentRuntimeOptions) {
+    this.profileId = String(options.profileId || '').trim() || undefined
     this.modelClient = options.modelClient
     this.toolsEnabled = options.toolsEnabled !== false
     this.tools = this.toolsEnabled
-      ? options.tools ?? createDefaultToolRegistry({ skillDirectory: options.skillDirectory })
+      ? options.tools ?? createDefaultToolRegistry({
+          skillDirectory: options.skillDirectory,
+          authorizer: options.toolAuthorizer,
+        })
       : new AgentToolRegistry()
+    if (this.toolsEnabled && options.tools && options.toolAuthorizer) {
+      this.tools.setAuthorizer(options.toolAuthorizer)
+    }
     this.skillsEnabled = options.skillsEnabled !== false
     this.skills = this.skillsEnabled ? options.skills ?? [] : []
     this.systemPrompt = options.systemPrompt
@@ -64,9 +149,23 @@ export class AgentRuntime {
     this.modelDefaults = options.modelDefaults
     this.maxModelRetries = options.maxModelRetries ?? DEFAULT_AGENT_MODEL_MAX_RETRIES
     this.maxConsecutiveToolFailures = options.maxConsecutiveToolFailures ?? DEFAULT_AGENT_MAX_CONSECUTIVE_TOOL_FAILURES
-    this.toolDelayMs = options.toolDelayMs ?? DEFAULT_AGENT_TOOL_DELAY_MS
+    this.backgroundDelegationEnabled = options.backgroundDelegationEnabled !== false
+    this.subtaskMaxSteps = Math.max(
+      1,
+      Math.floor(options.subtaskMaxSteps ?? DEFAULT_AGENT_SUBTASK_MAX_STEPS),
+    )
     this.defaultContextKey = options.contextKey
     this.memory = options.memory
+    this.runtimeLogger = options.logWriter
+      ? new EkkoRuntimeLogger(options.logWriter, { profile: options.logProfile })
+      : undefined
+    this.skillReviewEveryToolCalls = Math.max(
+      0,
+      Math.floor(options.skillReviewEveryToolCalls ?? DEFAULT_SKILL_REVIEW_TOOL_CALL_INTERVAL),
+    )
+    this.skillReview = this.toolsEnabled && this.skillsEnabled && options.skillDirectory
+      ? new SkillReviewService({ skillDirectory: options.skillDirectory })
+      : undefined
     this.registerSkillTools(this.skills)
     if (this.toolsEnabled && this.memory) this.tools.registerMany(createMemoryTools(this.memory))
   }
@@ -88,6 +187,86 @@ export class AgentRuntime {
     await this.tools.refreshTools(context)
   }
 
+  async drainSkillReviews(): Promise<void> {
+    await this.skillReview?.drain()
+  }
+
+  hasBackgroundTasks(sessionId?: string): boolean {
+    for (const task of this.backgroundTasks.values()) {
+      if (!sessionId || task.sessionId === sessionId) return true
+    }
+    return false
+  }
+
+  async abortBackgroundTasks(sessionId?: string): Promise<number> {
+    const tasks = [...this.backgroundTasks.values()]
+      .filter(task => !sessionId || task.sessionId === sessionId)
+    for (const task of tasks) {
+      task.controller.abort()
+      task.resolveContinuationContext(null)
+    }
+    await Promise.allSettled(tasks.map(task => task.promise))
+    return tasks.length
+  }
+
+  /**
+   * Stop a foreground run at the next runtime-owned safe boundary.
+   *
+   * Model requests are aborted immediately. Tool batches are allowed to finish
+   * in full, and the run stops before the next model request. Repeated requests
+   * for the same run are idempotent and never affect detached subagents.
+   */
+  requestBoundaryInterrupt(
+    input: AgentRuntimeBoundaryInterruptRequest,
+  ): AgentRuntimeBoundaryInterruptResult {
+    const sessionId = input.sessionId.trim()
+    const expectedRunId = input.expectedRunId?.trim()
+    const sessionRuns = [...this.activeBoundaryRuns.values()]
+      .filter(run => run.sessionId === sessionId && !run.terminal)
+
+    if (sessionRuns.length === 0) return { status: 'not_running' }
+
+    const activeRun = expectedRunId
+      ? sessionRuns.find(run => run.runId === expectedRunId)
+      : sessionRuns.length === 1
+        ? sessionRuns[0]
+        : undefined
+
+    if (!activeRun) {
+      return { status: expectedRunId ? 'run_mismatch' : 'ambiguous' }
+    }
+    if (activeRun.pending) {
+      return {
+        status: 'already_pending',
+        runId: activeRun.runId,
+        phase: activeRun.phase,
+      }
+    }
+
+    activeRun.pending = true
+    if (activeRun.phase === 'model') activeRun.modelController.abort()
+    return {
+      status: 'accepted',
+      runId: activeRun.runId,
+      phase: activeRun.phase,
+    }
+  }
+
+  /**
+   * Estimate the provider-visible context without starting a model run.
+   *
+   * Hosts that own conversation compaction can use this to account for Ekko's
+   * system prompt, tools, and provider context while keeping compaction itself
+   * outside the runtime.
+   */
+  async estimateContext(input: AgentRuntimeRunInput): Promise<AgentRuntimeContextEstimate> {
+    await this.refreshTools(this.runToolContext(input))
+    const modelClient = this.modelClientFor(input)
+    const messages = this.prepareMessages(input)
+    const request = this.modelRequest(input, messages, modelClient, this.contextKeyFor(input))
+    return estimateModelRequestContext(request)
+  }
+
   async run(input: AgentRuntimeRunInput): Promise<AgentRuntimeRunResult> {
     await this.refreshTools(this.runToolContext(input))
 
@@ -97,20 +276,46 @@ export class AgentRuntime {
     const maxSteps = input.maxSteps ?? this.maxSteps
     const maxModelRetries = input.maxModelRetries ?? this.maxModelRetries
     const maxConsecutiveToolFailures = input.maxConsecutiveToolFailures ?? this.maxConsecutiveToolFailures
-    const toolDelayMs = input.toolDelayMs ?? this.toolDelayMs
+    const pendingBackgroundSubagentIds = new Set<string>()
     const emit = (event: AgentRuntimeEvent) => {
       events.push(event)
       input.onEvent?.(event)
     }
-
-    emit({ type: 'run.started', runId, maxSteps })
 
     const inputSkills = this.skillsEnabled ? input.skills ?? [] : []
     this.registerSkillTools(inputSkills)
     const memoryIdentity = this.memoryIdentityFor(input)
     const memoryPreparation = await this.prepareMemory(input, memoryIdentity)
     const memoryContext = memoryPreparation?.context
-    const executionToolContext = this.runToolContext(input, memoryPreparation?.sourceMessageIds)
+    const sessionId = this.contextKeyFor(input)?.trim()
+    const activeBoundaryRun = sessionId
+      ? this.registerBoundaryRun(sessionId, runId)
+      : undefined
+
+    emit({ type: 'run.started', runId, maxSteps })
+
+    const executionToolContext: AgentToolContext = {
+      ...(this.runToolContext(input, memoryPreparation?.sourceMessageIds) || {}),
+      runId,
+      skillMutationSource: 'foreground',
+      delegationDepth: input.toolContext?.delegationDepth ?? this.toolContext?.delegationDepth ?? 0,
+      delegateTask: request => {
+        if (request.mode === 'background' && this.backgroundDelegationFor(input) === false) {
+          return Promise.resolve({
+            ok: false,
+            content: 'Background subtask delegation is disabled for this run. Use foreground mode.',
+            error: 'Background subtask delegation is disabled for this run. Use foreground mode.',
+          })
+        }
+        return this.delegateTask(
+          request,
+          input,
+          runId,
+          emit,
+          subagentId => pendingBackgroundSubagentIds.add(subagentId),
+        )
+      },
+    }
     if (memoryContext) {
       emit({
         type: 'memory.retrieved',
@@ -127,13 +332,28 @@ export class AgentRuntime {
     const contextKey = this.contextKeyFor(input)
     let contextEstimate: AgentRuntimeContextEstimate | undefined
     let consecutiveToolFailures = 0
+    const completeBoundaryInterrupt = (completedSteps: number): AgentRuntimeRunResult => {
+      if (activeBoundaryRun) activeBoundaryRun.terminal = true
+      output = {
+        role: 'assistant',
+        content: '',
+        finishReason: 'boundary_interrupt',
+      }
+      const context = contextKey ? this.modelContexts.get(contextKey) : undefined
+      emit({ type: 'run.completed', runId, output, steps: completedSteps, context, contextEstimate })
+      return { runId, messages, output, steps, events, context, contextEstimate, memoryContext }
+    }
 
     try {
       for (let step = 1; step <= maxSteps; step += 1) {
         throwIfAborted(input.signal)
+        if (activeBoundaryRun?.pending) return completeBoundaryInterrupt(step - 1)
+        const modelSignal = activeBoundaryRun
+          ? enterBoundaryModelPhase(activeBoundaryRun, input.signal)
+          : input.signal
         const modelClient = this.modelClientFor(input)
         emit({ type: 'model.started', runId, step })
-        const request = this.modelRequest(input, messages, modelClient, contextKey)
+        const request = this.modelRequest(input, messages, modelClient, contextKey, modelSignal)
         contextEstimate = estimateModelRequestContext(request)
         emit({ type: 'context.estimated', runId, step, estimate: contextEstimate })
         const modelResult = await this.createModelResponseWithRetries(
@@ -143,14 +363,21 @@ export class AgentRuntime {
           step,
           maxModelRetries,
           emit,
+          input.logContext,
         )
+        if (activeBoundaryRun?.pending) return completeBoundaryInterrupt(step - 1)
         const response = modelResult.response
         const assistantMessage = modelResponseToAgentMessage(response)
+        const toolCalls = assistantMessage.toolCalls ?? []
+        if (activeBoundaryRun && toolCalls.length > 0) {
+          activeBoundaryRun.phase = 'tool_batch'
+        }
         output = assistantMessage
         messages.push(assistantMessage)
         steps.push({ type: 'model', step, message: assistantMessage })
-        if (assistantMessage.reasoning && !modelResult.emittedReasoning) {
-          emit({ type: 'model.reasoning', runId, step, text: assistantMessage.reasoning })
+        const reasoningText = agentReasoningText(assistantMessage.reasoning)
+        if (reasoningText && !modelResult.emittedReasoning) {
+          emit({ type: 'model.reasoning', runId, step, text: reasoningText })
         }
         if (assistantMessage.context !== undefined) {
           if (contextKey) this.modelContexts.set(contextKey, assistantMessage.context)
@@ -158,11 +385,15 @@ export class AgentRuntime {
         }
         emit({ type: 'model.message', runId, step, message: assistantMessage })
 
-        const toolCalls = assistantMessage.toolCalls ?? []
+        if (activeBoundaryRun?.pending && toolCalls.length === 0) {
+          return completeBoundaryInterrupt(step)
+        }
         if (toolCalls.length === 0) {
           const context = contextKey ? this.modelContexts.get(contextKey) : assistantMessage.context
+          if (activeBoundaryRun) activeBoundaryRun.terminal = true
           emit({ type: 'run.completed', runId, output, steps: step, context, contextEstimate })
-          this.completeMemory(memoryIdentity, messages, input)
+          this.completeMemory(runId, memoryIdentity, messages, input)
+          this.completeSkillReview(runId, contextKey, messages, input, input.onEvent)
           return { runId, messages, output, steps, events, context, contextEstimate, memoryContext }
         }
 
@@ -180,7 +411,9 @@ export class AgentRuntime {
           messages.push(createToolResultMessage(toolCall.id, result.content, toolCall.name, result.contentParts))
           steps.push({ type: 'tool', step, toolCallId: toolCall.id, toolName: toolCall.name, result })
           consecutiveToolFailures = result.ok ? 0 : consecutiveToolFailures + 1
+          if (input.skillReviewEnabled !== false) this.recordSkillToolCall(contextKey, toolCall.name)
           if (maxConsecutiveToolFailures > 0 && consecutiveToolFailures >= maxConsecutiveToolFailures) {
+            if (activeBoundaryRun) activeBoundaryRun.terminal = true
             emit({ type: 'run.tool_failure_limit', runId, failures: consecutiveToolFailures })
             output = {
               role: 'assistant',
@@ -189,13 +422,29 @@ export class AgentRuntime {
             }
             const context = contextKey ? this.modelContexts.get(contextKey) : undefined
             emit({ type: 'run.completed', runId, output, steps: step, context, contextEstimate })
-            this.completeMemory(memoryIdentity, messages, input)
+            this.completeMemory(runId, memoryIdentity, messages, input)
+            this.completeSkillReview(runId, contextKey, messages, input, input.onEvent)
             return { runId, messages, output, steps, events, context, contextEstimate, memoryContext }
           }
-          await delay(toolDelayMs, input.signal)
         }
+        if (pendingBackgroundSubagentIds.size > 0) {
+          const continuationMessages = cloneAgentMessages(messages.slice(1))
+          for (const subagentId of pendingBackgroundSubagentIds) {
+            this.backgroundTasks.get(subagentId)?.resolveContinuationContext({
+              version: 1,
+              subagentId,
+              originRunId: runId,
+              originStep: step,
+              messages: continuationMessages,
+              memoryPolicy: 'disabled',
+            })
+          }
+          pendingBackgroundSubagentIds.clear()
+        }
+        if (activeBoundaryRun?.pending) return completeBoundaryInterrupt(step)
       }
 
+      if (activeBoundaryRun) activeBoundaryRun.terminal = true
       emit({ type: 'run.max_steps', runId, maxSteps })
       output = {
         role: 'assistant',
@@ -204,12 +453,30 @@ export class AgentRuntime {
       }
       const context = contextKey ? this.modelContexts.get(contextKey) : undefined
       emit({ type: 'run.completed', runId, output, steps: maxSteps, context, contextEstimate })
-      this.completeMemory(memoryIdentity, messages, input)
+      this.completeMemory(runId, memoryIdentity, messages, input)
+      this.completeSkillReview(runId, contextKey, messages, input, input.onEvent)
       return { runId, messages, output, steps, events, context, contextEstimate, memoryContext }
     } catch (error) {
+      if (
+        activeBoundaryRun?.pending &&
+        activeBoundaryRun.modelController.signal.aborted &&
+        !input.signal?.aborted &&
+        isAbortError(error)
+      ) {
+        return completeBoundaryInterrupt(steps.filter(step => step.type === 'model').length)
+      }
       const message = error instanceof Error ? error.message : String(error)
+      if (activeBoundaryRun) activeBoundaryRun.terminal = true
       emit({ type: 'run.failed', runId, error: message, steps: steps.length })
       throw error
+    } finally {
+      for (const subagentId of pendingBackgroundSubagentIds) {
+        const task = this.backgroundTasks.get(subagentId)
+        task?.controller.abort()
+        task?.resolveContinuationContext(null)
+      }
+      if (input.ephemeralContext && contextKey) this.modelContexts.delete(contextKey)
+      if (activeBoundaryRun) this.activeBoundaryRuns.delete(activeBoundaryRun.runId)
     }
   }
 
@@ -220,14 +487,41 @@ export class AgentRuntime {
     step: number,
     maxRetries: number,
     emit: (event: AgentRuntimeEvent) => void,
+    logContext?: AgentRuntimeRunInput['logContext'],
   ): Promise<ModelResponseResult> {
     for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
       try {
         throwIfAborted(request.signal)
         if (request.stream && modelClient.capabilities.streaming) {
-          return await this.streamModelResponse(request, modelClient, runId, step, emit)
+          return await this.streamModelResponse(
+            request,
+            modelClient,
+            runId,
+            step,
+            attempt,
+            maxRetries + 1,
+            emit,
+            logContext,
+          )
         }
-        const response = await modelClient.create(request)
+        const span = this.runtimeLogger?.startModelRequest({
+          client: modelClient,
+          request,
+          runId,
+          step,
+          attempt,
+          maxAttempts: maxRetries + 1,
+          transport: 'create',
+          context: logContext,
+        })
+        let response: ModelResponse
+        try {
+          response = await modelClient.create(request)
+          span?.complete(response)
+        } catch (error) {
+          span?.fail(error)
+          throw error
+        }
         if (response.usage) emit({ type: 'model.usage', runId, step, usage: response.usage })
         return {
           response,
@@ -254,30 +548,70 @@ export class AgentRuntime {
     modelClient: NonNullable<AgentRuntimeOptions['modelClient']>,
     runId: string,
     step: number,
+    attempt: number,
+    maxAttempts: number,
     emit: (event: AgentRuntimeEvent) => void,
+    logContext?: AgentRuntimeRunInput['logContext'],
   ): Promise<ModelResponseResult> {
     let emittedReasoning = false
-    const events = modelClient.stream({ ...request, stream: true })
-    const output = await collectModelEvents((async function *streamAndEmit() {
-      for await (const event of events) {
-        if (event.type === 'text-delta') {
-          emit({ type: 'model.delta', runId, step, text: event.text })
-        } else if (event.type === 'reasoning-delta') {
-          emittedReasoning = true
-          emit({ type: 'model.reasoning', runId, step, text: event.text })
-        } else if (event.type === 'tool-call') {
-          emit({ type: 'model.tool_call', runId, step, toolCall: event.toolCall })
-        } else if (event.type === 'error') {
-          throw new Error(event.error)
+    const streamRequest = { ...request, stream: true }
+    const streamSpan = this.runtimeLogger?.startModelRequest({
+      client: modelClient,
+      request: streamRequest,
+      runId,
+      step,
+      attempt,
+      maxAttempts,
+      transport: 'stream',
+      context: logContext,
+    })
+    let output: Awaited<ReturnType<typeof collectModelEvents>>
+    try {
+      const events = modelClient.stream(streamRequest)
+      output = await collectModelEvents((async function *streamAndEmit() {
+        for await (const event of events) {
+          if (event.type === 'text-delta') {
+            emit({ type: 'model.delta', runId, step, text: event.text })
+          } else if (event.type === 'reasoning-delta') {
+            emittedReasoning = true
+            emit({ type: 'model.reasoning', runId, step, text: event.text })
+          } else if (event.type === 'tool-call') {
+            emit({ type: 'model.tool_call', runId, step, toolCall: event.toolCall })
+          } else if (event.type === 'error') {
+            throw new Error(event.error)
+          }
+          yield event
         }
-        yield event
-      }
-    })())
+      })())
+      streamSpan?.complete(output.message, { emptyResponse: isEmptyModelResponse(output.message) })
+    } catch (error) {
+      streamSpan?.fail(error)
+      throw error
+    }
     if (output.message.usage) {
       emit({ type: 'model.usage', runId, step, usage: output.message.usage })
     }
     if (isEmptyModelResponse(output.message)) {
-      const response = await modelClient.create({ ...request, stream: false })
+      const fallbackRequest = { ...request, stream: false }
+      const fallbackSpan = this.runtimeLogger?.startModelRequest({
+        client: modelClient,
+        request: fallbackRequest,
+        runId,
+        step,
+        attempt,
+        maxAttempts,
+        transport: 'create',
+        fallback: true,
+        context: logContext,
+      })
+      let response: ModelResponse
+      try {
+        response = await modelClient.create(fallbackRequest)
+        fallbackSpan?.complete(response)
+      } catch (error) {
+        fallbackSpan?.fail(error)
+        throw error
+      }
       if (response.usage) emit({ type: 'model.usage', runId, step, usage: response.usage })
       return {
         response,
@@ -295,15 +629,17 @@ export class AgentRuntime {
     const userSystemMessages = normalized.filter(message => message.role === 'system').map(message => message.content)
     const nonSystemMessages = normalized.filter(message => message.role !== 'system')
     const modelClient = this.modelClientFor(input)
-    const toolContext = input.toolContext ?? this.toolContext
+    const toolContext = this.mergedToolContext(input)
     const systemPrompt = buildSystemPrompt({
       basePrompt: input.systemPrompt ?? this.systemPrompt,
       runtimeInstructions: this.runtimeInstructions,
       userSystemMessages,
       memoryContext,
+      clarificationEnabled: this.toolsEnabled && !!this.tools.get('clarify'),
       skillDiscoveryEnabled: this.toolsEnabled &&
         !!this.tools.get('skill_list') &&
         !!this.tools.get('skill_view'),
+      skillManagementEnabled: this.toolsEnabled && !!this.tools.get('skill_manage'),
       context: {
         provider: modelClient.provider,
         model: input.model ?? input.modelDefaults?.model ?? this.modelDefaults?.model,
@@ -322,10 +658,10 @@ export class AgentRuntime {
     if (!this.memory || input.memoryEnabled === false) return undefined
     const sessionId = this.contextKeyFor(input)
     if (!sessionId) return undefined
-    const context = input.toolContext ?? this.toolContext
+    const context = this.mergedToolContext(input)
     return {
       sessionId,
-      profileId: stringMetadata(input.metadata?.profile) || context?.profileId || 'default',
+      profileId: this.profileId || stringMetadata(input.metadata?.profile) || context?.profileId || 'default',
     }
   }
 
@@ -356,6 +692,7 @@ export class AgentRuntime {
   }
 
   private completeMemory(
+    runId: string,
     identity: MemoryRuntimeIdentity | undefined,
     messages: AgentMessage[],
     input: AgentRuntimeRunInput,
@@ -371,8 +708,66 @@ export class AgentRuntime {
         model: input.model ?? input.modelDefaults?.model ?? this.modelDefaults?.model,
         signal: input.signal,
         onUsage: input.onMemoryUsage,
+        requestLogger: this.runtimeLogger,
+        requestLogContext: input.logContext,
+        requestRunId: runId,
       }),
     )
+  }
+
+  private recordSkillToolCall(contextKey: string | undefined, toolName: string): void {
+    if (!this.skillReview || this.skillReviewEveryToolCalls <= 0) return
+    const key = contextKey || '__default__'
+    if (toolName === 'skill_manage') {
+      this.skillToolCallCounts.delete(key)
+      return
+    }
+    const count = (this.skillToolCallCounts.get(key) || 0) + 1
+    this.skillToolCallCounts.delete(key)
+    this.skillToolCallCounts.set(key, count)
+    if (this.skillToolCallCounts.size > MAX_TRACKED_SKILL_REVIEW_CONTEXTS) {
+      const oldestKey = this.skillToolCallCounts.keys().next().value
+      if (oldestKey) this.skillToolCallCounts.delete(oldestKey)
+    }
+  }
+
+  private completeSkillReview(
+    runId: string,
+    contextKey: string | undefined,
+    messages: AgentMessage[],
+    input: AgentRuntimeRunInput,
+    emit?: (event: AgentRuntimeEvent) => void,
+  ): void {
+    if (
+      input.skillReviewEnabled === false ||
+      (input.toolContext?.delegationDepth ?? this.toolContext?.delegationDepth ?? 0) > 0 ||
+      !this.skillReview ||
+      this.skillReviewEveryToolCalls <= 0 ||
+      !this.tools.get('skill_manage')
+    ) {
+      return
+    }
+    const key = contextKey || '__default__'
+    if ((this.skillToolCallCounts.get(key) || 0) < this.skillReviewEveryToolCalls) return
+    this.skillToolCallCounts.delete(key)
+    const modelClient = this.modelClientFor(input)
+    this.skillReview.schedule({
+      modelClient,
+      model: input.model ?? input.modelDefaults?.model ?? this.modelDefaults?.model,
+      messages: messages.map(message => ({ ...message })),
+      requestLogger: this.runtimeLogger,
+      requestLogContext: input.logContext,
+      requestRunId: runId,
+      onUsage: input.onSkillReviewUsage,
+      onStarted: reviewId => emit?.({ type: 'skill.review.started', runId, reviewId }),
+      onCompleted: (reviewId, mutations) => emit?.({
+        type: 'skill.review.completed',
+        runId,
+        reviewId,
+        mutations,
+      }),
+      onFailed: (reviewId, error) => emit?.({ type: 'skill.review.failed', runId, reviewId, error }),
+    })
   }
 
   private modelRequest(
@@ -380,17 +775,30 @@ export class AgentRuntime {
     messages: AgentMessage[],
     modelClient: NonNullable<AgentRuntimeOptions['modelClient']>,
     contextKey: string | undefined,
+    signal: AbortSignal | undefined = input.signal,
   ): ModelRequest {
     const modelDefaults = input.modelDefaults ?? this.modelDefaults
+    const toolDefinitions = this.toolsEnabled
+      ? this.tools.definitions().filter(definition => (
+          (input.toolContext?.delegationDepth ?? this.toolContext?.delegationDepth ?? 0) === 0 ||
+          definition.name !== 'delegate_task'
+        )).map(definition => this.backgroundDelegationFor(input) === false
+          ? foregroundOnlyDelegateTaskDefinition(definition)
+          : definition)
+      : []
+    const tools = toolDefinitions.length > 0 ? toolDefinitions : undefined
     return {
       ...modelDefaults,
       model: input.model ?? modelDefaults?.model,
       temperature: input.temperature ?? modelDefaults?.temperature,
       maxTokens: input.maxTokens ?? modelDefaults?.maxTokens,
+      reasoningEffort: input.reasoningEffort ?? modelDefaults?.reasoningEffort,
+      reasoningSummary: input.reasoningSummary ?? modelDefaults?.reasoningSummary,
       metadata: input.metadata ?? modelDefaults?.metadata,
       messages,
-      signal: input.signal,
-      tools: this.toolsEnabled ? this.tools.definitions() : undefined,
+      signal,
+      tools,
+      toolChoice: tools ? modelDefaults?.toolChoice : undefined,
       stream: modelClient.capabilities.streaming,
       context: input.context ?? (contextKey ? this.modelContexts.get(contextKey) : modelDefaults?.context),
     }
@@ -403,6 +811,23 @@ export class AgentRuntime {
       this.defaultContextKey
   }
 
+  private backgroundDelegationFor(input: AgentRuntimeRunInput): boolean {
+    return input.backgroundDelegationEnabled ?? this.backgroundDelegationEnabled
+  }
+
+  private registerBoundaryRun(sessionId: string, runId: string): ActiveBoundaryRun {
+    const activeRun: ActiveBoundaryRun = {
+      runId,
+      sessionId,
+      phase: 'model',
+      modelController: new AbortController(),
+      pending: false,
+      terminal: false,
+    }
+    this.activeBoundaryRuns.set(runId, activeRun)
+    return activeRun
+  }
+
   private modelClientFor(input: AgentRuntimeRunInput): NonNullable<AgentRuntimeOptions['modelClient']> {
     const modelClient = input.modelClient ?? this.modelClient
     if (!modelClient) {
@@ -412,13 +837,21 @@ export class AgentRuntime {
   }
 
   private runToolContext(input: AgentRuntimeRunInput, sourceMessageIds?: string[]): AgentToolContext | undefined {
-    const context = input.toolContext ?? this.toolContext
+    const context = this.mergedToolContext(input)
     if (!input.signal && !sourceMessageIds?.length) return context
     return {
       ...context,
       ...(sourceMessageIds?.length ? { sourceMessageIds } : {}),
       signal: input.signal,
     }
+  }
+
+  private mergedToolContext(input: AgentRuntimeRunInput): AgentToolContext | undefined {
+    const context = this.toolContext || input.toolContext
+      ? { ...this.toolContext, ...input.toolContext }
+      : undefined
+    if (!this.profileId) return context
+    return { ...context, profileId: this.profileId }
   }
 
   private async executeTool(
@@ -474,6 +907,248 @@ export class AgentRuntime {
     }
   }
 
+  private async delegateTask(
+    request: AgentTaskRequest,
+    parentInput: AgentRuntimeRunInput,
+    parentRunId: string,
+    emit: (event: AgentRuntimeEvent) => void,
+    onBackgroundStarted?: (subagentId: string) => void,
+  ): Promise<AgentToolResult> {
+    const subagentId = randomUUID()
+    const background = request.mode === 'background'
+    const startedAt = Date.now()
+    const controller = new AbortController()
+    let resolveContinuationContext!: (context: EkkoBackgroundContinuationContext | null) => void
+    const continuationContextReady = new Promise<EkkoBackgroundContinuationContext | null>((resolve) => {
+      resolveContinuationContext = resolve
+    })
+    const sessionId = this.contextKeyFor(parentInput)
+    const childContextKey = sessionId
+      ? `${sessionId}:subagent:${subagentId}`
+      : `subagent:${subagentId}`
+    const abortChild = () => controller.abort()
+    parentInput.signal?.addEventListener('abort', abortChild, { once: true })
+    if (parentInput.signal?.aborted) controller.abort()
+    emit({
+      type: 'subagent.start',
+      runId: parentRunId,
+      subagentId,
+      goal: request.goal,
+      background,
+      model: parentInput.model ?? parentInput.modelDefaults?.model ?? this.modelDefaults?.model,
+      startedAt,
+    })
+
+    let toolCount = 0
+    let apiCalls = 0
+    let inputTokens = 0
+    let outputTokens = 0
+    let cacheReadTokens = 0
+    let cacheWriteTokens = 0
+    let reasoningTokens = 0
+    let childRunId: string | undefined
+    const streamedTextSteps = new Set<number>()
+    const childPromise = (async (): Promise<AgentToolResult> => {
+      let status: 'completed' | 'failed' | 'interrupted' = 'completed'
+      let output = ''
+      let error: string | undefined
+      try {
+        const child = await this.run({
+          messages: [{
+            role: 'user',
+            content: subtaskPrompt(request),
+          }],
+          signal: controller.signal,
+          systemPrompt: parentInput.systemPrompt,
+          skills: parentInput.skills,
+          maxSteps: Math.min(
+            parentInput.maxSteps ?? this.maxSteps,
+            this.subtaskMaxSteps,
+          ),
+          maxModelRetries: parentInput.maxModelRetries,
+          maxConsecutiveToolFailures: parentInput.maxConsecutiveToolFailures,
+          toolContext: {
+            ...(parentInput.toolContext ?? this.toolContext),
+            signal: controller.signal,
+            delegationDepth: (parentInput.toolContext?.delegationDepth ?? this.toolContext?.delegationDepth ?? 0) + 1,
+            delegateTask: undefined,
+          },
+          model: parentInput.model,
+          temperature: parentInput.temperature,
+          maxTokens: parentInput.maxTokens,
+          reasoningEffort: parentInput.reasoningEffort,
+          reasoningSummary: parentInput.reasoningSummary,
+          metadata: {
+            ...parentInput.metadata,
+            session_id: sessionId ? `${sessionId}:subagent:${subagentId}` : `subagent:${subagentId}`,
+            parent_session_id: sessionId,
+            parent_run_id: parentRunId,
+            subagent_id: subagentId,
+          },
+          modelClient: parentInput.modelClient,
+          modelDefaults: parentInput.modelDefaults,
+          contextKey: childContextKey,
+          memoryEnabled: false,
+          backgroundDelegationEnabled: this.backgroundDelegationFor(parentInput),
+          logContext: parentInput.logContext,
+          onEvent: (event) => {
+            if ('runId' in event) childRunId = event.runId
+            if (event.type === 'model.delta') {
+              streamedTextSteps.add(event.step)
+              emit({
+                type: 'subagent.text',
+                runId: parentRunId,
+                childRunId,
+                subagentId,
+                goal: request.goal,
+                background,
+                text: event.text,
+              })
+            } else if (
+              event.type === 'model.message' &&
+              event.message.content &&
+              !streamedTextSteps.has(event.step)
+            ) {
+              emit({
+                type: 'subagent.text',
+                runId: parentRunId,
+                childRunId,
+                subagentId,
+                goal: request.goal,
+                background,
+                text: event.message.content,
+              })
+            } else if (event.type === 'model.reasoning' && event.text) {
+              emit({
+                type: 'subagent.thinking',
+                runId: parentRunId,
+                childRunId,
+                subagentId,
+                goal: request.goal,
+                background,
+                text: event.text,
+              })
+            } else if (event.type === 'tool.started') {
+              toolCount += 1
+              emit({
+                type: 'subagent.tool',
+                runId: parentRunId,
+                childRunId,
+                subagentId,
+                goal: request.goal,
+                background,
+                toolName: event.toolName,
+                arguments: event.arguments,
+                toolCount,
+              })
+            } else if (event.type === 'model.usage') {
+              apiCalls += 1
+              inputTokens += event.usage.inputTokens || 0
+              outputTokens += event.usage.outputTokens || 0
+              cacheReadTokens += event.usage.cacheReadTokens || 0
+              cacheWriteTokens += event.usage.cacheWriteTokens || 0
+              reasoningTokens += event.usage.reasoningTokens || 0
+            }
+          },
+        })
+        output = child.output.content || ''
+        if (child.output.finishReason === 'tool_failure_limit' || child.output.finishReason === 'max_steps') {
+          status = 'failed'
+          error = output || `Subtask stopped with ${child.output.finishReason}.`
+        }
+      } catch (childError) {
+        status = controller.signal.aborted || isAbortError(childError) ? 'interrupted' : 'failed'
+        error = childError instanceof Error ? childError.message : String(childError)
+        output = error
+      } finally {
+        parentInput.signal?.removeEventListener('abort', abortChild)
+        this.modelContexts.delete(childContextKey)
+      }
+
+      let continuationContext: EkkoBackgroundContinuationContext | undefined
+      if (background && status !== 'interrupted') {
+        const captured = await continuationContextReady
+        if (captured) {
+          continuationContext = captured
+        } else {
+          status = 'interrupted'
+          error = 'Background subtask result was suppressed because its origin context was not captured.'
+          output = error
+        }
+      }
+      const summary = subtaskSummary(output, status)
+      emit({
+        type: 'subagent.complete',
+        runId: parentRunId,
+        childRunId,
+        subagentId,
+        goal: request.goal,
+        background,
+        status,
+        summary,
+        output,
+        outputTail: output.slice(-SUBTASK_OUTPUT_TAIL_CHARS),
+        durationMs: Date.now() - startedAt,
+        toolCount,
+        apiCalls,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+        reasoningTokens,
+        ...(continuationContext ? { continuationContext } : {}),
+      })
+      const payload = {
+        runtime: 'ekko',
+        mode: request.mode,
+        subagent_id: subagentId,
+        status,
+        summary,
+        output,
+        duration_ms: Date.now() - startedAt,
+        tool_count: toolCount,
+        api_calls: apiCalls,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        cache_read_tokens: cacheReadTokens,
+        cache_write_tokens: cacheWriteTokens,
+        reasoning_tokens: reasoningTokens,
+      }
+      return {
+        ok: status === 'completed',
+        content: JSON.stringify(payload, null, 2),
+        data: payload,
+        ...(error ? { error } : {}),
+      }
+    })()
+
+    if (!background) return childPromise
+
+    this.backgroundTasks.set(subagentId, {
+      sessionId,
+      controller,
+      promise: childPromise,
+      resolveContinuationContext,
+    })
+    onBackgroundStarted?.(subagentId)
+    void childPromise.then(
+      () => this.backgroundTasks.delete(subagentId),
+      () => this.backgroundTasks.delete(subagentId),
+    )
+    const payload = {
+      runtime: 'ekko',
+      mode: request.mode,
+      subagent_id: subagentId,
+      status: 'running',
+      goal: request.goal,
+    }
+    return {
+      ok: true,
+      content: JSON.stringify(payload, null, 2),
+      data: payload,
+    }
+  }
+
   private registerSkillTools(skills: AgentSkill[]): void {
     if (!this.toolsEnabled || !this.skillsEnabled) return
     for (const skill of skills) {
@@ -484,24 +1159,18 @@ export class AgentRuntime {
   }
 }
 
-function delay(ms: number, signal?: AbortSignal): Promise<void> {
-  if (!Number.isFinite(ms) || ms <= 0) return Promise.resolve()
-  throwIfAborted(signal)
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort)
-      resolve()
-    }, ms)
-    const onAbort = () => {
-      clearTimeout(timer)
-      reject(abortError())
-    }
-    signal?.addEventListener('abort', onAbort, { once: true })
-  })
-}
-
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw abortError()
+}
+
+function enterBoundaryModelPhase(
+  activeRun: ActiveBoundaryRun,
+  externalSignal?: AbortSignal,
+): AbortSignal {
+  activeRun.phase = 'model'
+  activeRun.modelController = new AbortController()
+  if (!externalSignal) return activeRun.modelController.signal
+  return AbortSignal.any([externalSignal, activeRun.modelController.signal])
 }
 
 function abortError(): Error {
@@ -510,10 +1179,30 @@ function abortError(): Error {
   return error
 }
 
-function isEmptyModelResponse(response: ModelResponse): boolean {
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'AbortError' || error.message === 'Run aborted.')
+}
+
+function subtaskPrompt(request: AgentTaskRequest): string {
+  return [
+    `Complete this delegated task independently:\n${request.goal}`,
+    request.context ? `Relevant context:\n${request.context}` : '',
+    'Return a concise result that the parent agent can use directly.',
+  ].filter(Boolean).join('\n\n')
+}
+
+function subtaskSummary(output: string, status: 'completed' | 'failed' | 'interrupted'): string {
+  const normalized = output.replace(/\s+/g, ' ').trim()
+  if (normalized) return normalized.slice(0, SUBTASK_SUMMARY_CHARS)
+  if (status === 'interrupted') return 'Subtask interrupted.'
+  if (status === 'failed') return 'Subtask failed.'
+  return 'Subtask completed.'
+}
+
+function isEmptyModelResponse(response: ModelResponse | AgentOutputMessage): boolean {
   return (
     !response.content?.trim() &&
-    !response.reasoning?.trim() &&
+    !agentReasoningText(response.reasoning).trim() &&
     !(response.toolCalls?.length)
   )
 }
@@ -522,12 +1211,19 @@ function estimateModelRequestContext(request: ModelRequest): AgentRuntimeContext
   const systemMessages = request.messages.filter(message => message.role === 'system')
   const nonSystemMessages = request.messages.filter(message => message.role !== 'system')
   const systemPrompt = systemMessages.map(message => message.content || '').join('\n\n')
-  const systemPromptTokens = countTokensLocal(systemPrompt)
+  const systemPromptTokens = countTextTokens(systemPrompt)
   const messageTokens = nonSystemMessages.reduce((sum, message) => {
-    return sum + countTokensLocal(message.content || '') + countTokensLocal(JSON.stringify(message.toolCalls || ''))
+    const estimatedReasoningTokens = agentReasoningEstimatedTokens(message.reasoning)
+    const reasoningTokens = estimatedReasoningTokens !== undefined && estimatedReasoningTokens > 0
+      ? estimatedReasoningTokens
+      : countTextTokens(agentReasoningText(message.reasoning))
+    return sum +
+      countTextTokens(message.content || '') +
+      reasoningTokens +
+      countTextTokens(JSON.stringify(message.toolCalls || ''))
   }, 0)
-  const toolTokens = countTokensLocal(JSON.stringify(request.tools || []))
-  const modelContextTokens = request.context == null ? 0 : countTokensLocal(JSON.stringify(request.context))
+  const toolTokens = countTextTokens(JSON.stringify(request.tools || []))
+  const modelContextTokens = request.context == null ? 0 : countTextTokens(JSON.stringify(request.context))
 
   return {
     contextTokens: systemPromptTokens + messageTokens + toolTokens + modelContextTokens,
@@ -539,48 +1235,6 @@ function estimateModelRequestContext(request: ModelRequest): AgentRuntimeContext
     toolCount: request.tools?.length || 0,
     systemPromptChars: systemPrompt.length,
   }
-}
-
-function countTokensLocal(text: string): number {
-  if (!text) return 0
-  if (hasPathologicalRun(text)) return heuristicTokens(text)
-  try {
-    return getEncoder().encode(text).length
-  } catch {
-    return heuristicTokens(text)
-  }
-}
-
-let cachedEncoder: ReturnType<typeof getEncoding> | null = null
-
-function getEncoder(): ReturnType<typeof getEncoding> {
-  if (!cachedEncoder) cachedEncoder = getEncoding('cl100k_base')
-  return cachedEncoder
-}
-
-function heuristicTokens(text: string): number {
-  const cjk = (text.match(/[\u2e80-\u9fff\uac00-\ud7af\u3000-\u303f\uff00-\uffef]/g) || []).length
-  const other = text.length - cjk
-  return Math.ceil(cjk * 1.5 + other / 4)
-}
-
-function hasPathologicalRun(text: string): boolean {
-  const maxRun = 20_000
-  let run = 0
-  for (let i = 0; i < text.length; i += 1) {
-    const code = text.charCodeAt(i)
-    const isLetterOrDigit =
-      (code >= 48 && code <= 57) ||
-      (code >= 65 && code <= 90) ||
-      (code >= 97 && code <= 122)
-    if (isLetterOrDigit) {
-      run += 1
-      if (run > maxRun) return true
-    } else {
-      run = 0
-    }
-  }
-  return false
 }
 
 function toMemoryCaptureMessage(message: AgentMessage): MemoryCaptureMessage {

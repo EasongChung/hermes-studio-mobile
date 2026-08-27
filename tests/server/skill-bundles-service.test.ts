@@ -9,7 +9,7 @@ import {
   listSkillBundles,
   SkillBundleConflictError,
   SkillBundleValidationError,
-} from '../../packages/server/src/services/hermes/skill-bundles'
+} from '../../packages/server/src/modules/hermes/services/skill-bundles/skill-bundles'
 
 describe('skill bundle service', () => {
   let root = ''
@@ -75,6 +75,8 @@ describe('skill bundle service', () => {
     await expect(createSkillBundle('default', { name: 'Review 审查', skills: ['one'] }))
       .rejects.toBeInstanceOf(SkillBundleValidationError)
     await expect(createSkillBundle('default', { name: 'create', skills: ['one'] }))
+      .rejects.toBeInstanceOf(SkillBundleValidationError)
+    await expect(createSkillBundle('default', { name: 'yolo', skills: ['one'] }))
       .rejects.toBeInstanceOf(SkillBundleValidationError)
     await expect(createSkillBundle('default', { name: 'Review', skills: [] }))
       .rejects.toBeInstanceOf(SkillBundleValidationError)

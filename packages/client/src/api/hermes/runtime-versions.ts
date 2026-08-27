@@ -8,6 +8,7 @@ export interface ActiveVersionManifest {
   runtimeRootDirectory?: string
   pendingRuntimeRootDirectory?: string
   runtimeMigrationError?: string
+  runtimeActivationError?: string
   webUiDirectory?: string
   platform?: string
   updatedAt?: string
@@ -25,6 +26,14 @@ export interface InstalledWebUiVersion {
   version: string
   directory: string
   active: boolean
+}
+
+export interface HermesCliInstallation {
+  path: string
+  version: string
+  source: 'managed-runtime' | 'user-cli'
+  selected: boolean
+  managedRuntimeVersion?: string
 }
 
 export type VersionDownloadKind = 'runtime' | 'webui'
@@ -57,11 +66,14 @@ export interface RuntimeVersionStatus {
   remoteError: string
   hermes: {
     activeVersion: string
+    agentVersion: string
     activeDirectory: string
     storageDirectory: string
     defaultStorageDirectory: string
     pendingStorageDirectory: string
     migrationError: string
+    activationError: string
+    cliInstallations: HermesCliInstallation[]
     installed: InstalledRuntimeVersion[]
     remoteVersions: string[]
   }
@@ -74,8 +86,12 @@ export interface RuntimeVersionStatus {
   }
 }
 
-export async function fetchRuntimeVersionStatus(): Promise<RuntimeVersionStatus> {
-  return request<RuntimeVersionStatus>('/api/hermes/runtime-versions')
+export async function fetchRuntimeVersionStatus(options: { probeRuntime?: boolean; includeRemote?: boolean } = {}): Promise<RuntimeVersionStatus> {
+  const params = new URLSearchParams()
+  if (options.probeRuntime === false) params.set('runtime', 'false')
+  if (options.includeRemote === false) params.set('remote', 'false')
+  const query = params.size ? `?${params.toString()}` : ''
+  return request<RuntimeVersionStatus>(`/api/hermes/runtime-versions${query}`)
 }
 
 export async function activateRuntimeVersion(version: string): Promise<{ success: boolean; active: ActiveVersionManifest }> {
@@ -109,6 +125,12 @@ export async function downloadRuntimeVersion(version: string, source: VersionDow
 export async function deleteRuntimeVersion(version: string): Promise<{ success: boolean; deleted: InstalledRuntimeVersion }> {
   return request<{ success: boolean; deleted: InstalledRuntimeVersion }>(`/api/hermes/runtime-versions/runtime/${encodeURIComponent(version)}`, {
     method: 'DELETE',
+  })
+}
+
+export async function restartWebUiAfterRuntimeChange(): Promise<{ success: boolean }> {
+  return request<{ success: boolean }>('/api/hermes/runtime-versions/restart-webui', {
+    method: 'POST',
   })
 }
 

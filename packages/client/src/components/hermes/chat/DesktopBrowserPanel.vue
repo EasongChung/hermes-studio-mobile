@@ -3,10 +3,14 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NButton, NInput, NPopover, NSelect, useDialog, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { desktopBridge, type DesktopBrowserDownload, type DesktopBrowserSelection, type DesktopBrowserState } from '@/utils/desktop-bridge'
+import type { BrowserAnnotationSubmission } from '@/utils/browser-annotation-submit'
 
-const emit = defineEmits<{
-  attach: [payload: { file: File; context: string }]
-}>()
+const props = withDefaults(defineProps<{
+  visible?: boolean
+  submit: (submission: BrowserAnnotationSubmission) => boolean | void | Promise<boolean | void>
+}>(), {
+  visible: true,
+})
 
 const { t } = useI18n()
 const message = useMessage()
@@ -61,6 +65,7 @@ const annotationCapture = ref<{
   viewport: DesktopBrowserSelection['viewport']
 } | null>(null)
 const annotationTabId = ref<string | null>(null)
+const annotationSubmitting = ref(false)
 const pendingAnnotation = ref<{
   marker: number
   mode: 'element' | 'region'
@@ -109,6 +114,7 @@ const annotationAnchorStyle = computed(() => {
 
 watch(() => activeTab.value?.url, value => { address.value = value || '' }, { immediate: true })
 watch(externalOverlayOpen, () => { void nextTick(syncViewport) })
+watch(() => props.visible, () => { void nextTick(syncViewport) })
 
 function applyState(next: DesktopBrowserState): void {
   state.value = next
@@ -117,7 +123,7 @@ function applyState(next: DesktopBrowserState): void {
 async function syncViewport(): Promise<void> {
   if (!bridge || !viewport.value) return
   const rect = viewport.value.getBoundingClientRect()
-  const visible = !externalOverlayOpen.value && !pendingAnnotation.value
+  const visible = props.visible && !externalOverlayOpen.value && !pendingAnnotation.value
     && rect.width > 0 && rect.height > 0 && document.visibilityState === 'visible'
   await bridge.setViewport({ x: rect.left, y: rect.top, width: rect.width, height: rect.height }, visible).catch(() => undefined)
 }
@@ -290,6 +296,7 @@ async function commitPendingAnnotation(restoreViewport = true): Promise<void> {
 }
 
 async function clearAnnotationSession(): Promise<void> {
+  if (annotationSubmitting.value) return
   const tabId = annotationTabId.value
   resetAnnotationSession()
   if (bridge && tabId) await bridge.clearAnnotations(tabId).catch(() => undefined)
@@ -297,40 +304,42 @@ async function clearAnnotationSession(): Promise<void> {
 }
 
 async function sendAnnotations(): Promise<void> {
-  await commitPendingAnnotation(false)
-  await annotationNoteUpdate
-  const capture = annotationCapture.value
-  const tabId = annotationTabId.value
-  if (!capture || annotations.value.length === 0) return
-  let file = capture.file
-  if (bridge && tabId) {
-    const screenshot = await bridge.captureAnnotations(tabId).catch(() => null)
-    if (screenshot) {
-      const bytes = Uint8Array.from(atob(screenshot.data), character => character.charCodeAt(0))
-      file = new File([bytes], `browser-annotations-${Date.now()}.png`, { type: screenshot.mediaType })
+  if (annotationSubmitting.value) return
+  annotationSubmitting.value = true
+  try {
+    await commitPendingAnnotation(false)
+    await annotationNoteUpdate
+    const capture = annotationCapture.value
+    const tabId = annotationTabId.value
+    if (!capture || annotations.value.length === 0) return
+    let file = capture.file
+    if (bridge && tabId) {
+      const screenshot = await bridge.captureAnnotations(tabId).catch(() => null)
+      if (screenshot) {
+        const bytes = Uint8Array.from(atob(screenshot.data), character => character.charCodeAt(0))
+        file = new File([bytes], `browser-annotations-${Date.now()}.png`, { type: screenshot.mediaType })
+      }
     }
-  }
-  emit('attach', {
-    file,
-    context: JSON.stringify({
-      browser_selection: {
-        tab_id: capture.tabId,
-        url: capture.url,
-        title: capture.title,
-        viewport: capture.viewport,
-        annotations: annotations.value,
-      },
-    }, null, 2),
-  })
-  annotations.value = []
-  annotationCapture.value = null
-  annotationTabId.value = null
-  annotationNote.value = ''
-  message.success(t('browser.annotationAdded'))
-  void (async () => {
+    const submission: BrowserAnnotationSubmission = {
+      file,
+      context: JSON.stringify({
+        browser_selection: {
+          tab_id: capture.tabId,
+          url: capture.url,
+          title: capture.title,
+          viewport: capture.viewport,
+          annotations: annotations.value,
+        },
+      }, null, 2),
+    }
+    const submitted = await props.submit(submission)
+    if (submitted === false) return
+    resetAnnotationSession()
     if (bridge && tabId) await bridge.clearAnnotations(tabId).catch(() => undefined)
     await nextTick(syncViewport)
-  })()
+  } finally {
+    annotationSubmitting.value = false
+  }
 }
 
 function handleAnnotationFocusout(event: FocusEvent): void {
@@ -524,8 +533,8 @@ onUnmounted(() => {
       <div v-if="hasAnnotationSession" class="annotation-session-bar">
         <span>{{ t('browser.annotationCount', { count: annotationCount }) }}</span>
         <div>
-          <NButton size="tiny" @mousedown.prevent @click="clearAnnotationSession">{{ t('browser.clearAnnotations') }}</NButton>
-          <NButton size="tiny" type="primary" @mousedown.prevent @click="sendAnnotations">{{ t('chat.send') }}</NButton>
+          <NButton size="tiny" :disabled="annotationSubmitting" @mousedown.prevent @click="clearAnnotationSession">{{ t('browser.clearAnnotations') }}</NButton>
+          <NButton size="tiny" type="primary" :loading="annotationSubmitting" @mousedown.prevent @click="sendAnnotations">{{ t('chat.send') }}</NButton>
         </div>
       </div>
 
@@ -544,7 +553,7 @@ onUnmounted(() => {
               @keydown="handleAnnotationKeydown"
             />
             <div class="annotation-actions">
-              <NButton size="small" @mousedown.prevent @click="clearAnnotationSession">{{ t('browser.clearAnnotations') }}</NButton>
+              <NButton size="small" :disabled="annotationSubmitting" @mousedown.prevent @click="clearAnnotationSession">{{ t('browser.clearAnnotations') }}</NButton>
               <NButton size="small" type="primary" @mousedown.prevent @click="commitPendingAnnotation()">{{ t('browser.finishAnnotation') }}</NButton>
             </div>
           </div>
@@ -564,7 +573,7 @@ onUnmounted(() => {
 .tab-strip { height: 38px; flex: 0 0 38px; display: flex; align-items: flex-end; gap: 2px; padding: 4px 8px 0; overflow-x: auto; background: rgba(127,127,127,.06); }
 .tab { width: 190px; min-width: 100px; height: 34px; border: 0; border-radius: 8px 8px 0 0; background: transparent; color: inherit; display: flex; align-items: center; gap: 7px; padding: 0 9px; cursor: pointer; }
 .tab.active { color: var(--text-primary, #1a1a1a); background: var(--bg-card, #fff); box-shadow: inset 0 0 0 1px var(--border-color, #e0e0e0); }
-.tab img { width: 16px; height: 16px; }.tab span { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: left; }.tab i { color: #3b82f6; font-size: 9px; }.tab b { font: 18px/1 sans-serif; font-weight: 400; }
+.tab img { width: 16px; height: 16px; }.tab span { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: start; }.tab i { color: #3b82f6; font-size: 9px; }.tab b { font: 18px/1 sans-serif; font-weight: 400; }
 .new-tab, .toolbar > button, .download-trigger { border: 0; background: transparent; color: inherit; cursor: pointer; border-radius: 6px; }.new-tab { width: 34px; height: 34px; font-size: 20px; }.toolbar > button, .download-trigger { width: 30px; height: 30px; font-size: 18px; }.toolbar > button { display: inline-grid; place-items: center; padding: 0; }.toolbar > button:hover, .download-trigger:hover, .new-tab:hover { background: rgba(127,127,127,.15); }.toolbar > button:disabled { opacity: .35; }
 .toolbar { height: 46px; flex: 0 0 46px; padding: 7px 10px; border-bottom: 1px solid var(--border-color); display: flex; align-items: center; gap: 8px; }
 .toolbar-icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
