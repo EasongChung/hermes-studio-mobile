@@ -58,7 +58,11 @@ object DownloadManagerHelper {
             val request = DownloadManager.Request(uri).apply {
                 // 设置用户代理（部分 Server 依赖此头判断客户端类型）
                 if (!userAgent.isNullOrBlank()) {
-                    setUserAgent(userAgent)
+                    // 【为什么用 addRequestHeader】DownloadManager.Request 没有公开的
+                    // setUserAgent(String) 方法，直接调用会在编译期报 unresolved reference
+                    // （run #52/#53 失败根因）。官方等价做法是添加 "User-Agent" 请求头，
+                    // DownloadManager 实际发起下载时会携带该头，效果与 setUserAgent 一致。
+                    addRequestHeader("User-Agent", userAgent)
                 }
                 // 设置 MIME 类型（帮助系统选择打开方式）
                 if (!mimeType.isNullOrBlank()) {
