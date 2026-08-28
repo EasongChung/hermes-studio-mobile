@@ -6,6 +6,7 @@ import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.hermes.mobile.config.ServerManager
 import com.hermes.mobile.config.UrlValidator
 
@@ -99,7 +100,9 @@ class ServerEditActivity : AppCompatActivity() {
         // 删除
         deleteButton.setOnClickListener {
             if (editServerId != null) {
-                android.app.AlertDialog.Builder(this)
+                // 用 Material3 builder 替代 framework AlertDialog：
+                // 跟随主题 materialAlertDialogTheme，深浅主题下文字对比度都有保证
+                MaterialAlertDialogBuilder(this)
                     .setTitle("删除服务器")
                     .setMessage("确定要删除「${nameInput.text}」吗？")
                     .setPositiveButton("删除") { _, _ ->

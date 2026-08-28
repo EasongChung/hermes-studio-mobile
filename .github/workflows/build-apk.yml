@@ -5,7 +5,7 @@
 # 执行流程：
 # 1. 检出代码
 # 2. 安装 Node.js → npm ci → npm run build（构建前端 dist）
-# 3. 复制 dist/client 到 android/app/src/main/assets/hermes/
+# 3. 校验 dist/client/index.html 存在（Gradle 直接引用 dist/client 打包进 assets 根，无需拷贝）
 # 4. 安装 JDK 17 → 生成/使用 keystore → 构建签名 APK
 # 5. 生成 Release 并上传 APK
 # 6. 首次构建时导出 keystore 供后续使用
@@ -60,15 +60,15 @@ jobs:
       - name: Build frontend dist
         run: npm run build
 
-      # Step 5: 复制前端资源到 Android assets 目录
-      - name: Copy frontend dist to Android assets
+      # Step 5: 校验前端构建产物
+      # Gradle 已把仓库根 dist/client 注册为 assets 源目录（见 android/app/build.gradle.kts），
+      # 打包时直接引用，不再拷贝到 android/app/src/main/assets/hermes。
+      # 这里只做存在性校验，若 npm run build 失败立即报错，避免打出空前端 APK。
+      - name: Verify frontend dist exists
         run: |
-          mkdir -p android/app/src/main/assets/hermes
-          cp -r dist/client/* android/app/src/main/assets/hermes/
-          echo "=== Assets content ==="
-          ls -la android/app/src/main/assets/hermes/
-          echo "=== index.html exists? ==="
-          test -f android/app/src/main/assets/hermes/index.html && echo "YES" || echo "NO"
+          test -f dist/client/index.html || { echo "::error::dist/client/index.html 不存在，npm run build 可能失败"; exit 1; }
+          echo "=== dist/client content (top level) ==="
+          ls -la dist/client/
 
       # Step 6: 安装 JDK 17（Android Gradle Plugin 8.x 要求）
       - name: Setup JDK 17

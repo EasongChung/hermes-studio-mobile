@@ -3,7 +3,8 @@
      声明 APP 组件、权限、硬件/软件特性。
 
      加载策略：本地加载前端，远程调用 API
-     前端打包在 APK assets/hermes/ 中 file:// 本地加载，
+     前端由 Gradle 从仓库根 dist/client 直接打包进 APK assets 根（不经拷贝），
+     WebView 加载服务器 URL 时由拦截器本地优先返回（运行时 OTA 包 → APK 出厂包 → 网络），
      API 请求通过 WebView 跨源访问发往远程服务器。
 
      - INTERNET 权限：WebView 访问网络必需

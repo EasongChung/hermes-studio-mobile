@@ -2,7 +2,6 @@ package com.hermes.mobile
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -34,6 +33,7 @@ import com.hermes.mobile.config.AuthTokenStore
 import com.hermes.mobile.config.ServerManager
 import com.hermes.mobile.webui.WebUiBundleManager
 import com.hermes.mobile.webui.WebUiBundlePolicy
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.ByteArrayInputStream
@@ -59,7 +59,11 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "HermesWeb"
-        private const val ASSETS_FRONTEND_PATH = "hermes"
+        // 【出厂前端的 assets 路径前缀】
+        // 空字符串 = 前端直接打包在 APK assets 根目录（build.gradle.kts 把仓库根
+        // dist/client 注册为 assets 源目录）。上游更新后 npm run build + 构建 APK
+        // 即完成内置前端升级，无需再拷贝到 src/main/assets/hermes。
+        private const val ASSETS_FRONTEND_PATH = ""
         private const val PREFS_NAME = "hermes_startup"
         private const val KEY_FIRST_LAUNCH = "first_launch_completed"
         // ===== Sprint 8 API 缓存调试开关 =====
@@ -931,10 +935,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun tryServeApkAsset(path: String): WebResourceResponse? {
+        // URL path → APK assets 相对路径（前缀为空，直接映射到 assets 根）。
+        // 【注意】AssetManager.open 不接受以 "/" 开头的路径，
+        //         且目录式访问（如 /docs/）应回落到该目录的 index.html。
         val assetPath = when {
-            path == "/" || path.isEmpty() -> "$ASSETS_FRONTEND_PATH/index.html"
-            path.startsWith("/") -> "$ASSETS_FRONTEND_PATH${path}"
-            else -> "$ASSETS_FRONTEND_PATH/$path"
+            path == "/" || path.isEmpty() -> "index.html"
+            path.endsWith("/") -> path.trimStart('/') + "index.html"
+            else -> path.trimStart('/')
         }
         val extension = assetPath.substringAfterLast('.', "").lowercase()
         if (extension !in STATIC_FILE_EXTENSIONS) return null
@@ -1171,9 +1178,16 @@ class MainActivity : AppCompatActivity() {
     /**
      * 显示退出登录确认对话框
      * 确认后：清除 WebView 状态，跳转到 ConfigActivity（服务器设置界面）
+     *
+     * 【为什么用 MaterialAlertDialogBuilder】
+     * 原先使用 framework 版 android.app.AlertDialog.Builder，它不跟随 Material3 主题，
+     * 深浅两种主题下都可能出现「文字颜色与弹窗背景对比不足」导致文字不清晰。
+     * Material3 版 builder 会读取主题的 materialAlertDialogTheme
+     * （见 themes.xml 中 ThemeOverlay.HermesStudioMobile.MaterialAlertDialog），
+     * 弹窗背景/标题/正文/按钮颜色全部绑定 Hermes 色板，两种主题下都保证 WCAG AA 对比度。
      */
     private fun showLogoutDialog() {
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle("退出登录")
             .setMessage("确定要退出当前会话，回到服务器设置界面吗？")
             .setPositiveButton("确定退出") { _, _ ->

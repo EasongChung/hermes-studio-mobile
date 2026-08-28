@@ -6,6 +6,15 @@
         <item name="colorOnPrimary">@color/hermes_on_action</item>
         <item name="colorSecondary">@color/hermes_accent</item>
         <item name="colorOnSecondary">@color/hermes_on_action</item>
+        <!-- 语义表面/文字绑定（与 values/themes.xml 保持一致，颜色自动取夜间变体） -->
+        <item name="colorSurface">@color/hermes_surface</item>
+        <item name="colorOnSurface">@color/hermes_text_primary</item>
+        <item name="colorOnSurfaceVariant">@color/hermes_text_secondary</item>
+        <item name="colorOutline">@color/hermes_border</item>
+        <item name="android:textColorPrimary">@color/hermes_text_primary</item>
+        <item name="android:textColorSecondary">@color/hermes_text_secondary</item>
+        <!-- 统一弹窗主题（夜间：主文字 14.0:1 / 正文 11.9:1 / 按钮 4.9:1） -->
+        <item name="materialAlertDialogTheme">@style/ThemeOverlay.HermesStudioMobile.MaterialAlertDialog</item>
         <item name="android:statusBarColor">@color/hermes_primary_dark</item>
         <item name="android:navigationBarColor">@color/hermes_primary_dark</item>
         <item name="android:windowBackground">@color/hermes_primary</item>

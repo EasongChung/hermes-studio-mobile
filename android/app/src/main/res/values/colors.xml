@@ -16,7 +16,9 @@
     <color name="hermes_border">#CBD5E1</color>
     <color name="hermes_text_primary">#0F172A</color>
     <color name="hermes_text_secondary">#475569</color>
-    <color name="hermes_text_muted">#64748B</color>
+    <!-- 次要/弱化文字（浅色主题）：#64748B 在页面渐变底上仅 4.55:1，11~12sp 小字号偏弱；
+         加深到 #5B6B82 后 ≥5.1:1。深色主题用 values-night 的 #94A3B8（7.4:1），无需调整 -->
+    <color name="hermes_text_muted">#5B6B82</color>
     <color name="hermes_on_action">#FFFFFF</color>
     <color name="hermes_success">#16A34A</color>
     <color name="hermes_warning">#D97706</color>

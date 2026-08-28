@@ -9,11 +9,35 @@
         <item name="colorOnPrimary">@color/hermes_on_action</item>
         <item name="colorSecondary">@color/hermes_accent</item>
         <item name="colorOnSecondary">@color/hermes_on_action</item>
+        <!-- 语义表面/文字绑定：把 Material3 默认组件（输入框、开关、菜单、对话框…）
+             的表面色与文字色钉到审核过的 Hermes 色板，避免基线紫灰在深浅主题下发糊。
+             颜色值由 values / values-night 的同名资源自动切换。 -->
+        <item name="colorSurface">@color/hermes_surface</item>
+        <item name="colorOnSurface">@color/hermes_text_primary</item>
+        <item name="colorOnSurfaceVariant">@color/hermes_text_secondary</item>
+        <item name="colorOutline">@color/hermes_border</item>
+        <item name="android:textColorPrimary">@color/hermes_text_primary</item>
+        <item name="android:textColorSecondary">@color/hermes_text_secondary</item>
+        <!-- 统一弹窗主题：标题/正文/按钮颜色都取自 Hermes 色板，
+             修复 framework AlertDialog 不跟随主题导致的「弹窗文字不清晰」 -->
+        <item name="materialAlertDialogTheme">@style/ThemeOverlay.HermesStudioMobile.MaterialAlertDialog</item>
         <item name="android:statusBarColor">@color/hermes_primary</item>
         <item name="android:navigationBarColor">@color/hermes_primary</item>
         <item name="android:windowBackground">@color/hermes_primary</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowLightNavigationBar">true</item>
+    </style>
+
+    <!-- 全 APP 统一的 Material 弹窗皮肤（配合 MaterialAlertDialogBuilder 使用）：
+         背景 = 表面浮层色，标题 = 主文字色，正文 = 次文字色，按钮 = 强调色。
+         浅色实测：主文字 16.3:1 / 正文 6.9:1 / 按钮 6.3:1；深色由同名夜间色自动适配（≥11.9:1）。 -->
+    <style name="ThemeOverlay.HermesStudioMobile.MaterialAlertDialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+        <item name="colorSurface">@color/hermes_surface_elevated</item>
+        <item name="colorOnSurface">@color/hermes_text_primary</item>
+        <item name="colorOnSurfaceVariant">@color/hermes_text_secondary</item>
+        <item name="colorPrimary">@color/hermes_accent</item>
+        <item name="colorOnPrimary">@color/hermes_on_action</item>
+        <item name="colorError">@color/hermes_danger</item>
     </style>
 
     <!-- Splash 启动页主题：显示 Logo 背景消除白屏 -->

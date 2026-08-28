@@ -62,6 +62,20 @@ android {
         }
     }
 
+    // ===== 前端资源：直接引用仓库根 dist/client（不拷贝进 android 源码树） =====
+    // 【是什么】把 upstream 前端构建产物 dist/client 注册为 main assets 源目录，
+    //           Gradle 打包时将其内容直接合并进 APK assets 根目录（assets/index.html …）。
+    // 【为什么】同步上游后只需 npm run build + 构建 APK，即可完成 APP 内置前端升级；
+    //           不再需要 CI / 本地把 dist 拷贝到 android/app/src/main/assets/hermes，
+    //           既消除「忘拷贝导致内置版本陈旧」，源码树也不再出现前端副本。
+    // 【配套】MainActivity.ASSETS_FRONTEND_PATH 已置空：拦截器把请求路径直接映射到 assets 根；
+    //           CI（build-apk.yml）也已移除拷贝步骤，仅保留 dist/client/index.html 存在性校验。
+    sourceSets {
+        getByName("main") {
+            assets.srcDir(rootProject.file("../dist/client"))
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
